@@ -2,9 +2,16 @@
 // Waves: making them, and measuring what the bed did to them.
 //
 // The functions here are the THEORY the simulator is checked against, kept apart
-// from the solver on purpose. Nothing in this file is used to advance the
-// solution; it only predicts and measures. If a check ever imports its expected
-// answer from the code that produced the answer, it has stopped being a check.
+// from the solver on purpose: nothing in this file reads the solver's state, and
+// no expected value here is ever derived from a simulation. If a check imports
+// its expected answer from the code that produced the answer, it has stopped
+// being a check.
+//
+// ONE EXCEPTION, stated because the header used to claim "nothing in this file
+// is used to advance the solution" and that was not true. The wavemakers --
+// regularWave() and jonswapSea() -- hand etaExt/uExt to swe.mjs's flather()
+// boundary, so they do drive the run. They are prescribed FORCING, not
+// prediction: nothing measured is compared against them.
 // ---------------------------------------------------------------------------
 
 export const G = 9.80665;
@@ -14,8 +21,16 @@ export const G = 9.80665;
  *
  * This is the EXACT linear relation, and it is deliberately not what the
  * shallow-water solver obeys -- SWE gives omega = k sqrt(gh), the kh -> 0 limit.
- * Keeping the true relation here is what lets tools/dispersion.mjs state how
- * wrong the model is at a given kh instead of quietly assuming it is right.
+ * Keeping the true relation here is what makes the model's error COMPUTABLE at a
+ * given kh -- airy().shallowRatio below is that ratio, c_Airy / sqrt(gh) --
+ * rather than quietly assumed away.
+ *
+ * Nothing here CORRECTS the dispersion. There is no Boussinesq mode anywhere in
+ * this repository and no tools/dispersion.mjs; an earlier version of this comment
+ * cited that file, and it has never existed. What the missing dispersion costs is
+ * measured instead as a shoaling-exponent sweep in tools/waves.mjs planeBeach:
+ * the fitted p in H ~ h^p runs +0.152, -0.179, -0.236, -0.238 for offshore
+ * heights 0.8, 0.2, 0.05, 0.012 m, against Green's law p = -0.25.
  *
  * Newton from the Guo (2002) initial guess; converges in 3-4 iterations.
  */
@@ -88,9 +103,15 @@ export function refractionCoefficient(theta0, theta) {
  */
 export const BREAKER_INDEX = 0.78;
 export function breakingDepth(H0, gamma = BREAKER_INDEX) {
-  // Shoal by Green's law until H = gamma*h. H0 (h0/h)^(1/4) = gamma h has no
-  // closed form in h without h0, so this is solved for the deep-water form
-  // H_b = 0.39 g^(1/5) (T H0^2)^(2/5) (Komar & Gaughan) -- reported separately.
+  // UNSHOALED, and that matters. This is the depth at which a wave still H0 tall
+  // would satisfy H = gamma h. A real wave shoals on the way in and arrives
+  // taller, so this is a LOWER BOUND on the breaking depth: for H0 = 0.8 m out of
+  // h0 = 20 m it returns 1.026 m, where solving the Green-shoaled form
+  // H0 (h0/h)^(1/4) = gamma h gives 1.858 m -- a factor of 1.81. That form needs
+  // h0, which this signature does not take, so it is not computed here; neither
+  // is the deep-water estimate H_b = 0.39 g^(1/5) (T H0^2)^(2/5) (Komar &
+  // Gaughan), which the previous comment said was "reported separately" and
+  // which nothing reports.
   return H0 / gamma;
 }
 

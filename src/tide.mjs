@@ -53,6 +53,32 @@ export const DIURNAL_COAST = {
   K1: [0.55, 20], O1: [0.38, 5], P1: [0.18, 18], M2: [0.16, 250], S2: [0.05, 280],
 };
 
+/**
+ * Cap on the reported resonant gain, and why there is a cap at all.
+ *
+ * The frictionless quarter-wave gain |sec(pi/2 * Tr/T)| has a POLE: a constituent
+ * landing exactly on the resonant period gets infinity, and one landing 0.1%
+ * away gets several hundred. Nothing physical does that -- friction and
+ * radiation back out of the mouth are what remove the divergence -- so the pole
+ * is an artefact of the frictionless model, and ranking constituents by it ranks
+ * them by how nearly they hit an artefact.
+ *
+ * 10 is where the formula stops discriminating. Solve |sec(pi/2 x)| = 10 and the
+ * roots are x = 0.936231 and x = 1.063769: everything above the cap is inside
+ * +/-6.4% of the resonant period, and inside that band this model cannot tell one
+ * case from another -- it is only saying "at resonance". It is also far above
+ * what any real basin does: the amplification from a shelf-edge tide to the head
+ * of a resonant bay is a factor of a few, the Bay of Fundy being the textbook
+ * case, so a reported gain of 10 already means "as amplified as anywhere on
+ * Earth, or the formula has run off its pole". Only the two roots above are
+ * measured here; the statement about real bays is background, not a measurement.
+ *
+ * The cap is a REPORTING choice, so it never hides: every row carries gainCap and
+ * a capped flag, and idealGain is returned uncapped for anyone who wants the raw
+ * pole.
+ */
+export const RESONANCE_GAIN_CAP = 10;
+
 export class Tide {
   /**
    * @param constituents  { NAME: [amplitude m, phase deg] }
@@ -122,18 +148,47 @@ export class Tide {
     return 4 * length / Math.sqrt(g * depth);
   }
 
-  /** Which constituent is closest to resonance in this basin, and by how much. */
-  resonanceReport(length, depth) {
+  /**
+   * What this basin does to each constituent, ranked by how much water it can
+   * actually raise -- amplitude x capped gain -- not by gain alone.
+   *
+   * THE OLD SORT PUT THE SMALLEST CONSTITUENT FIRST. It ordered on the raw
+   * frictionless gain, which is unbounded, so the winner was whichever term
+   * happened to sit nearest the pole regardless of how much tide it carries.
+   * Measured on this file's ATLANTIC_MESO constituents in a 230 km, 40 m basin
+   * (Tr = 12.903 h):
+   *
+   *   old order   N2  amp 0.28 m  gain 32.93  ->  9.22 m of response  (led)
+   *               M2  amp 1.35 m  gain 16.40  -> 22.14 m of response  (second)
+   *
+   * i.e. the report's headline was a constituent that raises 9.2 m while one
+   * raising 22.1 m came below it. In a 200 km, 40 m basin it was worse: K2, at
+   * 0.12 m, led over M2 at 1.35 m. With the cap and the amplitude weighting M2
+   * leads both basins, which is the answer a harbour engineer needs.
+   *
+   * `response` is amp x capped gain in metres and is the sort key. It is a
+   * DIAGNOSIS, not a prediction of the range: the gain is frictionless and the
+   * real basin is damped, so treat it as an upper bound that says which
+   * constituent this geometry favours. The measured amplification for a given
+   * basin is what tools/verify-tide.mjs section 2 produces, by running it.
+   */
+  resonanceReport(length, depth, gainCap = RESONANCE_GAIN_CAP) {
     const Tr = Tide.resonantPeriod(length, depth);
-    return this.terms.map(k => ({
-      name: k.name,
-      periodHours: k.period / 3600,
-      amp: k.amp,
-      detuning: k.period / Tr,
+    return this.terms.map(k => {
       // Amplification of a frictionless quarter-wave resonator, |sec(w L / c)|.
-      // Real basins are damped, so treat this as an upper bound and a diagnosis,
-      // never as a prediction of the range.
-      idealGain: Math.abs(1 / Math.cos(Math.PI / 2 * (Tr / k.period))),
-    })).sort((a, b) => b.idealGain - a.idealGain);
+      const idealGain = Math.abs(1 / Math.cos(Math.PI / 2 * (Tr / k.period)));
+      const gain = Math.min(idealGain, gainCap);
+      return {
+        name: k.name,
+        periodHours: k.period / 3600,
+        amp: k.amp,
+        detuning: k.period / Tr,
+        idealGain,
+        gain,
+        gainCap,
+        capped: idealGain > gainCap,
+        response: k.amp * gain,      // metres the basin could raise; the sort key
+      };
+    }).sort((a, b) => b.response - a.response);
   }
 }

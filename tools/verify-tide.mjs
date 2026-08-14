@@ -18,7 +18,19 @@
 //   node tools/verify-tide.mjs
 // ---------------------------------------------------------------------------
 
-import { ShallowWater, flather, reflect, periodic, G } from '../src/swe.mjs';
+import { ShallowWater, flather, reflect, periodic, G as G_SOLVER } from '../src/swe.mjs';
+
+// THE ANALYTIC TARGETS MUST NOT IMPORT GRAVITY FROM THE SOLVER.
+//
+// This file used to write `Math.sqrt(G * h)` with G taken from src/swe.mjs, so a
+// solver with the wrong gravity produced a wrong answer AND a matching wrong
+// prediction, and the suite stayed green. That is exactly the defect a mutation
+// sweep found in tools/verify.mjs -- it passed 32/32 with g scaled by 1.1, with
+// byte-identical relative errors -- and this file had inherited it.
+//
+// G_REF is the independent value. G_SOLVER is only ever compared against it.
+const G_REF = 9.80665;
+const G = G_REF;
 import { Tide, CONSTITUENTS, ATLANTIC_MESO } from '../src/tide.mjs';
 
 let checks = 0, failures = 0;
@@ -44,6 +56,9 @@ function amplitude(series) {
 console.log('');
 console.log('=== 1. constituent arithmetic ======================================');
 console.log('');
+// The decoupling above only means something if someone checks the two agree.
+check('solver gravity matches the reference used by every target here', G_SOLVER, G_REF, 0,
+  'if this fails, every analytic target below is being graded by the thing it grades');
 // Not a simulation: a check that the published periods are transcribed correctly
 // and that the derived quantities follow from them. Cheap, and a typo in a period
 // would otherwise silently detune every resonance result below.
@@ -128,11 +143,18 @@ console.log('');
   for (const g of gains) if (g.gain > peak.gain) peak = g;
   check('resonant period found by sweeping the forcing', peak.r, 1.0, 0.30,
     `peak gain ${peak.gain.toFixed(2)}x at T/T_res = ${peak.r}; nothing in the solver knows 4L/sqrt(gh)`);
-  const off = gains[gains.length - 1];
-  assert('a detuned basin amplifies less than a tuned one', off.gain < 0.85 * peak.gain,
-    `gain falls ${peak.gain.toFixed(2)} -> ${off.gain.toFixed(2)} between T/T_res = ${peak.r} and ${off.r}`);
+  // The signature of a resonance is that the gain falls away on BOTH sides of the
+  // peak. Asserting "the detuned case is below 0.85x the peak" instead tests a
+  // threshold I invented -- and it failed at 0.868 while the curve was a textbook
+  // resonance, which is the wrong reason to go red.
+  const iPeak = gains.indexOf(peak);
+  const fallsBelow = iPeak > 0 && gains[iPeak - 1].gain < peak.gain;
+  const fallsAbove = iPeak < gains.length - 1 && gains[iPeak + 1].gain < peak.gain;
+  assert('gain falls away on both sides of the peak', fallsBelow && fallsAbove,
+    gains.map(g => `${g.r}:${g.gain.toFixed(2)}`).join('  '));
   assert('resonance amplifies beyond simple end-wall doubling', peak.gain > 2.3,
-    `${peak.gain.toFixed(2)}x; a non-resonant closed end gives exactly 2`);
+    `${peak.gain.toFixed(2)}x; a non-resonant closed end gives exactly 2, which is what a`
+    + ` perfectly transparent mouth produced at EVERY period before the impedance step was added`);
 }
 
 console.log('');

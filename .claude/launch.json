@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "water", "runtimeExecutable": "node", "runtimeArgs": ["serve.mjs"], "port": 8750 }
+  ]
+}

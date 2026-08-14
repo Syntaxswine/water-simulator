@@ -27,8 +27,11 @@
 //
 // SCHEME
 //   - cell-centred finite volume, uniform grid
-//   - MUSCL reconstruction of (eta, u, v), minmod limited -> 2nd order in space.
-//     Reconstructing ETA and not h is what keeps lake-at-rest exact at 2nd order.
+//   - MUSCL reconstruction of (eta, u, v) -> 2nd order in space. The DEFAULT
+//     limiter is MC (monotonized central), not minmod; minmod and an unlimited
+//     central slope are selectable with `limiter`, and what the choice costs is
+//     measured in the comment on mc() below. Reconstructing ETA and not h is what
+//     keeps lake-at-rest exact at 2nd order.
 //   - HLLC approximate Riemann solver with Einfeldt wave speeds and explicit
 //     dry-state handling
 //   - SSP-RK2 (Heun) in time, which is TVD and will not manufacture the
@@ -40,9 +43,25 @@
 // wave travels at sqrt(g*h) regardless of wavelength. That is correct to within
 // a few percent for kh < 0.5 -- tides, surges, tsunamis, and swell once it is
 // well inside the surf zone -- and increasingly wrong in deeper water, where the
-// truth is omega^2 = g*k*tanh(k*h). src/boussinesq.mjs adds the dispersion
-// correction and tools/dispersion.mjs measures what it buys. Do not quote this
-// solver for deep-water wind sea.
+// truth is omega^2 = g*k*tanh(k*h). There is no dispersive term here and no
+// Boussinesq mode anywhere in this repository: if you need one it has to be
+// written. (An earlier version of this comment pointed at src/boussinesq.mjs and
+// tools/dispersion.mjs. Neither file has ever existed. src/waves.mjs holds the
+// exact Airy relation, so the ERROR at a given kh can be computed, but nothing
+// here corrects it.)
+//
+// The price is measured, not asserted. Without dispersion nothing balances the
+// nonlinear steepening that makes a crest outrun its trough, so a finite-
+// amplitude wave sharpens into a bore and the Riemann solver dissipates it
+// before it reaches the depth-limited breaking point. Fit p in H ~ h^p over a
+// plane beach (tools/waves.mjs planeBeach does exactly this, as an amplitude
+// sweep) and p comes out +0.152, -0.179, -0.236, -0.238 for offshore heights of
+// 0.8, 0.2, 0.05 and 0.012 m, against Green's law p = -0.25. So the small-
+// amplitude limit is recovered, and at 0.8 m the exponent has the WRONG SIGN:
+// that wave loses height as it shoals. Bed friction is not the cause -- with
+// Manning switched off the 0.8 m case moves only from 0.154 to 0.152. Do not
+// quote this solver for deep-water wind sea, and do not quote its shoaling for
+// waves steep enough to break before they arrive.
 // ---------------------------------------------------------------------------
 
 export const G = 9.80665;          // standard gravity [m/s^2]
@@ -104,6 +123,11 @@ export class ShallowWater {
   }) {
     this.nx = nx; this.ny = ny; this.dx = dx; this.dy = dy;
     this.manning = manning; this.minDepth = minDepth; this.cfl = cfl;
+    // vel()'s desingularisation constant, which depends only on minDepth. Cached
+    // because vel() is the most-called function in the solver; nothing in this
+    // repository assigns sim.minDepth after construction, and anything that did
+    // would have to recompute this alongside it.
+    this.eps4 = Math.max(minDepth, 1e-12) ** 4;
     this.coriolis = coriolis; this.order = order;
     this.limiterName = limiter;
     this.limit = LIMITERS[limiter];
@@ -131,6 +155,8 @@ export class ShallowWater {
     this.pxL = new Float64Array(N); this.pxR = new Float64Array(N);
     this.pyL = new Float64Array(N); this.pyR = new Float64Array(N);
     this.theta = new Float64Array(N);
+    // Cell velocities, refilled once per residual (see the note there).
+    this.uu = new Float64Array(N); this.vv = new Float64Array(N);
 
     for (let j = 0; j < this.H; j++) {
       for (let i = 0; i < this.W; i++) {
@@ -165,9 +191,8 @@ export class ShallowWater {
    * every shallow cell's velocity low and quietly damp run-up.
    */
   vel(hq, h) {
-    const eps4 = Math.max(this.minDepth, 1e-12) ** 4;
     const h4 = h * h * h * h;
-    return (Math.SQRT2 * h * hq) / Math.sqrt(h4 + Math.max(h4, eps4));
+    return (Math.SQRT2 * h * hq) / Math.sqrt(h4 + Math.max(h4, this.eps4));
   }
 
   // -- boundaries -----------------------------------------------------------
@@ -192,11 +217,34 @@ export class ShallowWater {
 
   /** Fill this.rh/rhu/rhv with the spatial residual (dU/dt). */
   residual(dt) {
-    const { W, H, ng, nx, ny, dx, dy } = this;
+    const { W, H, ng, dx, dy, minDepth } = this;
     const h = this.h, hu = this.hu, hv = this.hv, b = this.b;
     const rh = this.rh, rhu = this.rhu, rhv = this.rhv;
+    const fxM = this.fxM, fxN = this.fxN, fxT = this.fxT;
+    const fyM = this.fyM, fyN = this.fyN, fyT = this.fyT;
+    const pxL = this.pxL, pxR = this.pxR, pyL = this.pyL, pyR = this.pyR;
     rh.fill(0); rhu.fill(0); rhv.fill(0);
-    this.fxM.fill(0); this.fyM.fill(0);
+    fxM.fill(0); fyM.fill(0);
+
+    // ---- cell velocities, computed ONCE ----------------------------------
+    //
+    // The slope pass and the two interface passes all want u = hu/h at the same
+    // cells, and they used to ask for it separately: counted 4,066,992 vel()
+    // calls per step on a 320x320 grid, i.e. 39 per cell per step for 104,976
+    // cells. This one change is essentially the whole speedup of this file --
+    // 0.1230 -> 0.0503 s/step, minimum of 4 interleaved 100-step runs each --
+    // and end to end the same benchmark went 0.1181 -> 0.0485 s/step (200 steps,
+    // 4 runs each, minimum), a factor of 2.43.
+    //
+    // It is a pure caching change and has to be provable as one: vel() is a pure
+    // function of (hu, h), and nothing writes hu or h during a residual, so the
+    // cached value is the SAME double rather than an approximation of it. The
+    // 200-step state fingerprint is bit-identical before and after (FNV-1a over
+    // the raw bytes of h, hu, hv: 751585954432b699 either way), as are five other
+    // scenarios chosen to hit the dry front, first order, minmod, Coriolis and
+    // both dt branches.
+    const U = this.uu, V = this.vv, NC = U.length;
+    for (let k = 0; k < NC; k++) { const hk = h[k]; U[k] = this.vel(hu[k], hk); V[k] = this.vel(hv[k], hk); }
 
     // ---- slopes ----------------------------------------------------------
     const sE = this.sE, sU = this.sU, sV = this.sV, sB = this.sB;
@@ -204,7 +252,8 @@ export class ShallowWater {
     if (this.order >= 2) {
       for (let j = 1; j < H - 1; j++) {
         for (let i = 1; i < W - 1; i++) {
-          const k = j * W + i;
+          const k = j * W + i, k2 = 2 * k;
+          const hk = h[k], bk = b[k], eC = bk + hk, uk = U[k], vk = V[k];
           for (let d = 0; d < 2; d++) {
             const kp = d === 0 ? k + 1 : k + W;
             const km = d === 0 ? k - 1 : k - W;
@@ -221,44 +270,42 @@ export class ShallowWater {
             // the first-order scheme, which Audusse's hydrostatic reconstruction
             // balances exactly on its own. Zeroing only some of them would not:
             // the eta and bed reconstructions have to describe the same surface.
-            if (h[k] <= this.minDepth || h[kp] <= this.minDepth || h[km] <= this.minDepth) {
-              sE[2 * k + d] = 0; sB[2 * k + d] = 0; sU[2 * k + d] = 0; sV[2 * k + d] = 0;
+            if (hk <= minDepth || h[kp] <= minDepth || h[km] <= minDepth) {
+              sE[k2 + d] = 0; sB[k2 + d] = 0; sU[k2 + d] = 0; sV[k2 + d] = 0;
               continue;
             }
-            const eC = b[k] + h[k], eP = b[kp] + h[kp], eM = b[km] + h[km];
-            sE[2 * k + d] = lim(eC - eM, eP - eC);
-            sB[2 * k + d] = lim(b[k] - b[km], b[kp] - b[k]);
-            const uC = this.vel(hu[k], h[k]), uP = this.vel(hu[kp], h[kp]), uM = this.vel(hu[km], h[km]);
-            sU[2 * k + d] = lim(uC - uM, uP - uC);
-            const vC = this.vel(hv[k], h[k]), vP = this.vel(hv[kp], h[kp]), vM = this.vel(hv[km], h[km]);
-            sV[2 * k + d] = lim(vC - vM, vP - vC);
+            const eP = b[kp] + h[kp], eM = b[km] + h[km];
+            sE[k2 + d] = lim(eC - eM, eP - eC);
+            sB[k2 + d] = lim(bk - b[km], b[kp] - bk);
+            sU[k2 + d] = lim(uk - U[km], U[kp] - uk);
+            sV[k2 + d] = lim(vk - V[km], V[kp] - vk);
           }
         }
       }
     } else { sE.fill(0); sU.fill(0); sV.fill(0); sB.fill(0); }
 
     // ---- x interfaces ----------------------------------------------------
-    const FL = [0, 0, 0], FR = [0, 0, 0], flux = [0, 0, 0];
+    const flux = [0, 0, 0];              // hllc() writes here; FL/FR live in hllc
     for (let j = ng; j < H - ng; j++) {
       for (let i = ng - 1; i < W - ng; i++) {
-        const kL = j * W + i, kR = kL + 1;
+        const kL = j * W + i, kR = kL + 1, kL2 = 2 * kL, kR2 = 2 * kR;
         // reconstructed states at the shared face
-        const etaL = b[kL] + h[kL] + 0.5 * sE[2 * kL];
-        const etaR = b[kR] + h[kR] - 0.5 * sE[2 * kR];
-        const bL = b[kL] + 0.5 * sB[2 * kL];
-        const bR = b[kR] - 0.5 * sB[2 * kR];
+        const etaL = b[kL] + h[kL] + 0.5 * sE[kL2];
+        const etaR = b[kR] + h[kR] - 0.5 * sE[kR2];
+        const bL = b[kL] + 0.5 * sB[kL2];
+        const bR = b[kR] - 0.5 * sB[kR2];
         const hLf = Math.max(0, etaL - bL);
         const hRf = Math.max(0, etaR - bR);
-        const uL = this.vel(hu[kL], h[kL]) + 0.5 * sU[2 * kL];
-        const uR = this.vel(hu[kR], h[kR]) - 0.5 * sU[2 * kR];
-        const vL = this.vel(hv[kL], h[kL]) + 0.5 * sV[2 * kL];
-        const vR = this.vel(hv[kR], h[kR]) - 0.5 * sV[2 * kR];
+        const uL = U[kL] + 0.5 * sU[kL2];
+        const uR = U[kR] - 0.5 * sU[kR2];
+        const vL = V[kL] + 0.5 * sV[kL2];
+        const vR = V[kR] - 0.5 * sV[kR2];
 
         // hydrostatic reconstruction against the higher bed
         const bStar = Math.max(bL, bR);
         const hsL = Math.max(0, etaL - bStar);
         const hsR = Math.max(0, etaR - bStar);
-        hllc(flux, hsL, hsL * uL, hsL * vL, hsR, hsR * uR, hsR * vR, this.minDepth);
+        hllc(flux, hsL, hsL * uL, hsL * vL, hsR, hsR * uR, hsR * vR, minDepth);
 
         // Interface-local pressure corrections. This is the well-balancing: the
         // flux each cell sees is the Riemann flux plus the difference between
@@ -266,25 +313,25 @@ export class ShallowWater {
         // surface produces g/2*h^2 on both sides and nothing moves.
         const pL = 0.5 * G * (hLf * hLf - hsL * hsL);
         const pR = 0.5 * G * (hRf * hRf - hsR * hsR);
-        this.fxM[kL] = flux[0]; this.fxN[kL] = flux[1]; this.fxT[kL] = flux[2];
-        this.pxL[kL] = pL; this.pxR[kL] = pR;
+        fxM[kL] = flux[0]; fxN[kL] = flux[1]; fxT[kL] = flux[2];
+        pxL[kL] = pL; pxR[kL] = pR;
       }
     }
 
     // ---- y interfaces ----------------------------------------------------
     for (let j = ng - 1; j < H - ng; j++) {
       for (let i = ng; i < W - ng; i++) {
-        const kL = j * W + i, kR = kL + W;
-        const etaL = b[kL] + h[kL] + 0.5 * sE[2 * kL + 1];
-        const etaR = b[kR] + h[kR] - 0.5 * sE[2 * kR + 1];
-        const bL = b[kL] + 0.5 * sB[2 * kL + 1];
-        const bR = b[kR] - 0.5 * sB[2 * kR + 1];
+        const kL = j * W + i, kR = kL + W, kL2 = 2 * kL + 1, kR2 = 2 * kR + 1;
+        const etaL = b[kL] + h[kL] + 0.5 * sE[kL2];
+        const etaR = b[kR] + h[kR] - 0.5 * sE[kR2];
+        const bL = b[kL] + 0.5 * sB[kL2];
+        const bR = b[kR] - 0.5 * sB[kR2];
         const hLf = Math.max(0, etaL - bL);
         const hRf = Math.max(0, etaR - bR);
-        const uL = this.vel(hu[kL], h[kL]) + 0.5 * sU[2 * kL + 1];
-        const uR = this.vel(hu[kR], h[kR]) - 0.5 * sU[2 * kR + 1];
-        const vL = this.vel(hv[kL], h[kL]) + 0.5 * sV[2 * kL + 1];
-        const vR = this.vel(hv[kR], h[kR]) - 0.5 * sV[2 * kR + 1];
+        const uL = U[kL] + 0.5 * sU[kL2];
+        const uR = U[kR] - 0.5 * sU[kR2];
+        const vL = V[kL] + 0.5 * sV[kL2];
+        const vR = V[kR] - 0.5 * sV[kR2];
 
         const bStar = Math.max(bL, bR);
         const hsL = Math.max(0, etaL - bStar);
@@ -292,12 +339,12 @@ export class ShallowWater {
         // Same solver, axes swapped: pass v as the normal component and u as the
         // tangential one, then swap back. One Riemann solver, no second copy to
         // drift out of step with the first.
-        hllc(flux, hsL, hsL * vL, hsL * uL, hsR, hsR * vR, hsR * uR, this.minDepth);
+        hllc(flux, hsL, hsL * vL, hsL * uL, hsR, hsR * vR, hsR * uR, minDepth);
 
         const pL = 0.5 * G * (hLf * hLf - hsL * hsL);
         const pR = 0.5 * G * (hRf * hRf - hsR * hsR);
-        this.fyM[kL] = flux[0]; this.fyN[kL] = flux[1]; this.fyT[kL] = flux[2];
-        this.pyL[kL] = pL; this.pyR[kL] = pR;
+        fyM[kL] = flux[0]; fyN[kL] = flux[1]; fyT[kL] = flux[2];
+        pyL[kL] = pL; pyR[kL] = pR;
       }
     }
 
@@ -321,10 +368,10 @@ export class ShallowWater {
         for (let i = ng - 1; i < W - ng + 1; i++) {
           const k = j * W + i;
           let out = 0;
-          if (this.fxM[k] > 0) out += this.fxM[k] / dx;
-          if (this.fxM[k - 1] < 0) out -= this.fxM[k - 1] / dx;
-          if (this.fyM[k] > 0) out += this.fyM[k] / dy;
-          if (this.fyM[k - W] < 0) out -= this.fyM[k - W] / dy;
+          if (fxM[k] > 0) out += fxM[k] / dx;
+          if (fxM[k - 1] < 0) out -= fxM[k - 1] / dx;
+          if (fyM[k] > 0) out += fyM[k] / dy;
+          if (fyM[k - W] < 0) out -= fyM[k - W] / dy;
           const avail = h[k];
           if (out * dt > avail) theta[k] = avail > 0 ? avail / (out * dt) : 0;
         }
@@ -333,19 +380,19 @@ export class ShallowWater {
     for (let j = ng; j < H - ng; j++) {
       for (let i = ng - 1; i < W - ng; i++) {
         const kL = j * W + i, kR = kL + 1;
-        const th = this.fxM[kL] >= 0 ? theta[kL] : theta[kR];
+        const th = fxM[kL] >= 0 ? theta[kL] : theta[kR];
         const inv = th / dx;
-        rh[kL] -= this.fxM[kL] * inv; rhu[kL] -= (this.fxN[kL] + this.pxL[kL]) * inv; rhv[kL] -= this.fxT[kL] * inv;
-        rh[kR] += this.fxM[kL] * inv; rhu[kR] += (this.fxN[kL] + this.pxR[kL]) * inv; rhv[kR] += this.fxT[kL] * inv;
+        rh[kL] -= fxM[kL] * inv; rhu[kL] -= (fxN[kL] + pxL[kL]) * inv; rhv[kL] -= fxT[kL] * inv;
+        rh[kR] += fxM[kL] * inv; rhu[kR] += (fxN[kL] + pxR[kL]) * inv; rhv[kR] += fxT[kL] * inv;
       }
     }
     for (let j = ng - 1; j < H - ng; j++) {
       for (let i = ng; i < W - ng; i++) {
         const kL = j * W + i, kR = kL + W;
-        const th = this.fyM[kL] >= 0 ? theta[kL] : theta[kR];
+        const th = fyM[kL] >= 0 ? theta[kL] : theta[kR];
         const inv = th / dy;
-        rh[kL] -= this.fyM[kL] * inv; rhv[kL] -= (this.fyN[kL] + this.pyL[kL]) * inv; rhu[kL] -= this.fyT[kL] * inv;
-        rh[kR] += this.fyM[kL] * inv; rhv[kR] += (this.fyN[kL] + this.pyR[kL]) * inv; rhu[kR] += this.fyT[kL] * inv;
+        rh[kL] -= fyM[kL] * inv; rhv[kL] -= (fyN[kL] + pyL[kL]) * inv; rhu[kL] -= fyT[kL] * inv;
+        rh[kR] += fyM[kL] * inv; rhv[kR] += (fyN[kL] + pyR[kL]) * inv; rhu[kR] += fyT[kL] * inv;
       }
     }
 
@@ -353,12 +400,12 @@ export class ShallowWater {
     if (this.order >= 2) {
       for (let j = ng; j < H - ng; j++) {
         for (let i = ng; i < W - ng; i++) {
-          const k = j * W + i;
-          const eC = b[k] + h[k];
+          const k = j * W + i, k2 = 2 * k, bk = b[k];
+          const eC = bk + h[k];
           for (let d = 0; d < 2; d++) {
-            const hP = Math.max(0, eC + 0.5 * sE[2 * k + d] - (b[k] + 0.5 * sB[2 * k + d]));
-            const hM = Math.max(0, eC - 0.5 * sE[2 * k + d] - (b[k] - 0.5 * sB[2 * k + d]));
-            const db = sB[2 * k + d];
+            const hP = Math.max(0, eC + 0.5 * sE[k2 + d] - (bk + 0.5 * sB[k2 + d]));
+            const hM = Math.max(0, eC - 0.5 * sE[k2 + d] - (bk - 0.5 * sB[k2 + d]));
+            const db = sB[k2 + d];
             const term = -G * 0.5 * (hP + hM) * db / (d === 0 ? dx : dy);
             if (d === 0) rhu[k] += term; else rhv[k] += term;
           }
@@ -447,8 +494,20 @@ export class ShallowWater {
    */
   step(dt = null) {
     this.applyBC();
-    const dtMax = this.maxDt();
-    const h = dt == null ? Math.min(dtMax, this.dxLimit ?? Infinity) : dt;
+    // maxDt() scans every cell. It used to run on EVERY step, including the ones
+    // where the caller had already supplied dt -- and every caller in tools/ does,
+    // as sim.step(Math.min(sim.maxDt(), ...)) -- so the grid was scanned twice per
+    // step to produce one usable number. The old code then took
+    // Math.min(dtMax, this.dxLimit ?? Infinity), and dxLimit was never assigned
+    // anywhere in this repository, so the min() was always with Infinity.
+    //
+    // SMALL: maxDt() costs 0.75 ms per call timed where it actually runs, i.e.
+    // straight after a residual has evicted the grid from cache, against a step
+    // that cost 119.34 ms before this work and 48.89 ms after. So this removes
+    // 0.6% of the old step and it is invisible in an A/B against machine noise.
+    // It is still the right change -- a full-grid scan whose answer is discarded
+    // is not something to leave in the hot path -- but it is not the speedup.
+    const h = dt == null ? this.maxDt() : dt;
     if (!(h > 0) || !isFinite(h)) return 0;
 
     const N = this.h.length;
@@ -491,7 +550,27 @@ export class ShallowWater {
     return v * dx * dy;
   }
 
-  /** Total energy: kinetic + potential relative to the datum [J/rho]. */
+  /**
+   * Total energy: kinetic + potential relative to the datum [J/rho].
+   *
+   * NO CALLER. Nothing in src/ or tools/ uses this, so no check exercises it and
+   * it cannot be called verified. It is kept because it is the one diagnostic
+   * that tells energy the scheme DISSIPATED apart from energy that left through
+   * a boundary, which is what every argument about a radiation condition turns
+   * into, and because writing it later against a running solver is how people
+   * end up calibrating a diagnostic to the answer it is supposed to judge.
+   *
+   * Checked once by hand (2026-08-14) against closed forms rather than against
+   * this solver's own output, on a 40x40 lake at dx = 25 m:
+   *   still, bed at datum, h = 10 m   4.90332500000010788e+8  vs g/2 h^2 A
+   *                                   4.90332500000000000e+8  rel 2.2e-14
+   *   same lake at u = 2 m/s          5.10332500000011206e+8  vs (h u^2/2 + g h^2/2) A
+   *                                   5.10332500000000000e+8  rel 2.2e-14
+   *   bed 10 m BELOW the datum       -4.90332500000010788e+8  vs g/2 h(h+2b) A
+   *                                  -4.90332500000000000e+8  rel 2.2e-14
+   * The 1e-14 is the summation order over 1600 cells, not a modelling error.
+   * That is a one-off measurement, not a regression guard: nothing re-runs it.
+   */
   energy() {
     const { W, ng, nx, ny, dx, dy } = this;
     let e = 0;
@@ -559,6 +638,28 @@ export class ShallowWater {
 // wet-wet formula across a dry front is how a shoreline ends up either frozen or
 // launching a spurious jet.
 // ---------------------------------------------------------------------------
+// SHARED SCRATCH -- safe, and worth less than it looks. The two physical fluxes
+// below used to be a fresh pair of arrays on every call that reached the contact
+// branch: counted on a 320x320 grid, 410,880 hllc() calls per step of which
+// 321,428 reach that branch, i.e. 642,856 short-lived arrays per step.
+//
+// THAT COUNT IS NOT WHERE THE TIME WENT, and the honest thing is to say so.
+// Hoisting them changed the step time by nothing measurable: 0.1230 s/step with
+// the allocations against 0.1231 without (minimum of 4 interleaved 100-step runs
+// each, 320x320, on a machine with other work on it). V8 allocates a small array
+// by bumping a pointer, and these die before the next scavenge, so the collector
+// never copies them. The change is kept because it is free and bit-identical, and
+// because 642,856 allocations per step is a genuine cost under a different engine
+// or a larger surviving set -- but the profile said the arithmetic in residual()
+// was the hot loop, not this, and the profile was right.
+//
+// Safety: the solver is single-threaded and hllc() is not re-entrant -- no await,
+// no callback, and nothing else in this file reads these two arrays -- so one
+// shared pair cannot be observed by anyone. A worker-per-tile parallelisation
+// would still be safe, since each worker gets its own module instance; two
+// INTERLEAVED hllc() calls in one realm would not be, and that needs an async
+// boundary this function does not have.
+const FLs = [0, 0, 0], FRs = [0, 0, 0];
 export function hllc(out, hL, huL, hvL, hR, huR, hvR, dry = 1e-4) {
   const wetL = hL > dry, wetR = hR > dry;
   if (!wetL && !wetR) { out[0] = out[1] = out[2] = 0; return out; }
@@ -586,13 +687,12 @@ export function hllc(out, hL, huL, hvL, hR, huR, hvR, dry = 1e-4) {
   const den = hR * (uR - sR) - hL * (uL - sL);
   const sM = Math.abs(den) > 1e-30 ? num / den : 0.5 * (sL + sR);
 
-  const FL = [0, 0, 0], FR = [0, 0, 0];
-  flux1D(FL, hL, huL, hvL, uL);
-  flux1D(FR, hR, huR, hvR, uR);
+  flux1D(FLs, hL, huL, hvL, uL);
+  flux1D(FRs, hR, huR, hvR, uR);
   // HLL for mass and normal momentum...
   const inv = 1 / (sR - sL);
-  out[0] = (sR * FL[0] - sL * FR[0] + sL * sR * (hR - hL)) * inv;
-  out[1] = (sR * FL[1] - sL * FR[1] + sL * sR * (huR - huL)) * inv;
+  out[0] = (sR * FLs[0] - sL * FRs[0] + sL * sR * (hR - hL)) * inv;
+  out[1] = (sR * FLs[1] - sL * FRs[1] + sL * sR * (huR - huL)) * inv;
   // ...and the contact wave decides which side's transverse momentum is carried.
   out[2] = out[0] * (sM >= 0 ? vL : vR);
   return out;
@@ -706,11 +806,26 @@ export function periodic(sim, i, j, side) {
  * A sponge layer: relax the solution toward a reference over the last `width`
  * cells, so an outgoing wave is absorbed rather than reflected.
  *
- * Flather is exact only for a linear normal-incidence long wave. A steep or
- * oblique wave still returns a few percent of its amplitude, and a few percent
- * arriving back at a wavemaker for a hundred periods is not a few percent. The
- * sponge is the belt to Flather's braces; tools/verify.mjs measures what the
- * pair actually absorb rather than assuming it is enough.
+ * UNUSED AND UNVERIFIED, and this docstring used to claim otherwise. It said
+ * "tools/verify.mjs measures what the pair actually absorb". There is no such
+ * check. Nothing in this repository calls makeSponge: tools/waves.mjs imports
+ * the name and then deliberately does not use it, because a sponge on the
+ * WAVEMAKER boundary damps the incident wave -- its comment records a requested
+ * 0.8 m wave arriving as 0.16 m. So the absorption of this function has never
+ * been measured, by anything, and the reasoning above about Flather's residual
+ * reflection is an argument for why a sponge might help, not evidence that this
+ * one does.
+ *
+ * It is kept rather than deleted only because the export is imported by
+ * tools/waves.mjs, and a named import of a missing export is a link-time
+ * SyntaxError -- the tool would not start, and tools/ is not mine to edit in the
+ * same change. Delete the function and that import together, or write a check
+ * that sends a pulse into it and measures what comes back. An absorber nobody
+ * has measured is exactly the thing that quietly eats the signal you came to
+ * measure.
+ *
+ * Note also that the relaxation rate is `strength * dt * 60`: `strength` is a
+ * fraction per 1/60 s frame, not a rate per second.
  */
 export function makeSponge(sim, { side = 'east', width = 20, strength = 0.06, etaRef = 0 }) {
   const { nx, ny, W, ng } = sim;

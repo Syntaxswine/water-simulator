@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>water — shallow-water coastal simulation</title>
+<style>
+  :root { --bg:#0d1117; --panel:#151b23; --ink:#c9d4e0; --dim:#7c8b9c; --line:#243040; --hi:#7fd4e8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; display:flex; height:100vh; overflow:hidden; }
+  #view { flex:1; min-width:0; position:relative; }
+  canvas { width:100%; height:100%; display:block; }
+  aside { width:330px; flex:none; overflow-y:auto; background:var(--panel);
+          border-left:1px solid var(--line); padding:14px 16px 40px; }
+  h1 { font-size:13px; letter-spacing:.14em; text-transform:uppercase; margin:0 0 2px; color:var(--hi); }
+  .sub { color:var(--dim); font-size:11px; margin:0 0 16px; }
+  fieldset { border:1px solid var(--line); border-radius:4px; margin:0 0 14px; padding:9px 11px 12px; }
+  legend { color:var(--hi); font-size:10px; letter-spacing:.14em; text-transform:uppercase; padding:0 5px; }
+  label { display:block; margin:8px 0 3px; color:var(--dim); font-size:11px; }
+  select, input[type=range] { width:100%; }
+  select { background:#0f151c; color:var(--ink); border:1px solid var(--line); border-radius:3px; padding:4px; font:inherit; }
+  input[type=range] { accent-color:var(--hi); }
+  .row { display:flex; justify-content:space-between; gap:8px; }
+  .row output { color:var(--hi); }
+  .btns { display:flex; gap:6px; margin-top:10px; }
+  button { flex:1; background:#0f151c; color:var(--ink); border:1px solid var(--line);
+           border-radius:3px; padding:5px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--hi); color:var(--hi); }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  td { padding:2px 0; }
+  td:last-child { text-align:right; color:var(--hi); }
+  .note { color:var(--dim); font-size:10.5px; line-height:1.45; margin:8px 0 0; }
+  .warn { color:#e8b45c; }
+</style>
+</head>
+<body>
+<div id="view"><canvas id="c"></canvas></div>
+<aside>
+  <h1>Water</h1>
+  <p class="sub">Nonlinear shallow-water equations. Well-balanced, wetting/drying.</p>
+
+  <fieldset>
+    <legend>shoreline</legend>
+    <select id="shoreline"></select>
+    <p class="note" id="blurb"></p>
+    <p class="note" id="expect" style="color:var(--hi);opacity:.8"></p>
+  </fieldset>
+
+  <fieldset>
+    <legend>forcing</legend>
+    <label>mode</label>
+    <select id="mode">
+      <option value="wave">waves — regular swell</option>
+      <option value="sea">waves — irregular (JONSWAP)</option>
+      <option value="tide">tide — M2 + S2</option>
+      <option value="still">still water</option>
+    </select>
+    <label class="row"><span>wave height H</span><output id="oH"></output></label>
+    <input type="range" id="H" min="1" max="30" step="1" value="10">
+    <label class="row"><span>period T</span><output id="oT"></output></label>
+    <input type="range" id="T" min="4" max="20" step="1" value="12">
+    <label class="row"><span>tidal range</span><output id="oR"></output></label>
+    <input type="range" id="R" min="0" max="60" step="1" value="20">
+  </fieldset>
+
+  <fieldset>
+    <legend>view</legend>
+    <label class="row"><span>colour scale &plusmn;</span><output id="oS"></output></label>
+    <input type="range" id="S" min="1" max="40" step="1" value="10">
+    <label class="row"><span>resolution</span><output id="oQ"></output></label>
+    <input type="range" id="Q" min="50" max="140" step="10" value="100">
+    <div class="btns"><button id="run">pause</button><button id="reset">reset</button></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>readout</legend>
+    <table>
+      <tr><td>time</td><td id="r_t">&mdash;</td></tr>
+      <tr><td>grid</td><td id="r_grid">&mdash;</td></tr>
+      <tr><td>cells / wavelength</td><td id="r_cpw">&mdash;</td></tr>
+      <tr><td>timestep</td><td id="r_dt">&mdash;</td></tr>
+      <tr><td>max speed</td><td id="r_spd">&mdash;</td></tr>
+      <tr><td>wetted area</td><td id="r_wet">&mdash;</td></tr>
+      <tr><td>volume drift</td><td id="r_vol">&mdash;</td></tr>
+      <tr><td>ms / frame</td><td id="r_ms">&mdash;</td></tr>
+    </table>
+    <p class="note" id="reswarn"></p>
+  </fieldset>
+
+  <p class="note">
+    The colour scale is fixed, never auto-ranged: auto-ranging looks better and lies,
+    because a calm frame gets stretched until numerical noise fills the range.
+    Below 40 cells per wavelength the result is measuring the grid rather than the bed &mdash;
+    the readout says so.
+  </p>
+</aside>
+
+<script type="module">
+import { ShallowWater, flather, reflect, periodic, G } from './src/swe.mjs';
+import { shoreline, SHORELINES } from './src/shorelines.mjs';
+import { regularWave, jonswapSea } from './src/waves.mjs';
+import { Tide } from './src/tide.mjs';
+import { WaterView } from './src/render.mjs';
+
+const $ = id => document.getElementById(id);
+const view = new WaterView($('c'));
+let sim = null, running = true, v0 = 0, msl = 0, cpw = 0;
+
+const sel = $('shoreline');
+for (const [k, s] of Object.entries(SHORELINES)) {
+  const o = document.createElement('option');
+  o.value = k; o.textContent = s.title;
+  sel.appendChild(o);
+}
+sel.value = 'headlandBay';
+
+function build() {
+  const name = sel.value;
+  const { bed, meta } = shoreline(name);
+  $('blurb').textContent = meta.blurb;
+  $('expect').textContent = meta.expect;
+
+  // Resolution is a slider because it is the single number that decides whether
+  // a wave result means anything, and hiding it would be dishonest.
+  const q = +$('Q').value / 100;
+  const nx = Math.max(40, Math.round(meta.domain.nx * q));
+  const ny = Math.max(1, Math.round(meta.domain.ny * q));
+  const dx = meta.domain.dx / q, dy = meta.domain.dy / q;
+
+  const mode = $('mode').value;
+  const H = +$('H').value / 10, T = +$('T').value, range = +$('R').value / 10;
+  const h0 = meta.offshoreDepth;
+  msl = 0;
+  sim = new ShallowWater({ nx, ny, dx, dy, bed, eta0: 0, manning: 0.024 });
+
+  if (mode === 'tide') {
+    const tide = new Tide({ M2: [range / 2, 0], S2: [range / 6, 40] }, 0);
+    // Tides are slow: run the clock fast enough that a cycle is watchable.
+    sim._speed = 220;
+    sim.boundaries = {
+      west: flather(t => tide.eta(t), t => Math.sqrt(G / h0) * tide.eta(t)),
+      east: reflect, south: periodic, north: periodic,
+    };
+    cpw = Infinity;
+  } else if (mode === 'still') {
+    sim._speed = 1;
+    sim.boundaries = { west: reflect, east: reflect, south: periodic, north: periodic };
+    cpw = Infinity;
+  } else {
+    const wm = mode === 'sea'
+      ? jonswapSea({ Hs: H, Tp: T, depth: h0, seed: 7 })
+      : regularWave({ height: H, period: T, depth: h0, rampPeriods: 3 });
+    sim._speed = 1;
+    sim.boundaries = { west: flather(wm.etaExt, wm.uExt), east: reflect, south: periodic, north: periodic };
+    cpw = Math.sqrt(G * h0) * T / dx;
+  }
+  v0 = sim.volume();
+  view.sectionRow = ny >> 1;
+  $('r_grid').textContent = `${nx} x ${ny} @ ${dx.toFixed(1)} m`;
+  $('r_cpw').textContent = isFinite(cpw) ? cpw.toFixed(0) : 'n/a';
+  $('reswarn').innerHTML = (isFinite(cpw) && cpw < 40)
+    ? `<span class="warn">${cpw.toFixed(0)} cells/wavelength is below the 40 needed for a trustworthy wave height. Raise the resolution or lengthen the period.</span>`
+    : '';
+}
+
+function syncOuts() {
+  $('oH').textContent = (+$('H').value / 10).toFixed(1) + ' m';
+  $('oT').textContent = $('T').value + ' s';
+  $('oR').textContent = (+$('R').value / 10).toFixed(1) + ' m';
+  $('oS').textContent = (+$('S').value / 10).toFixed(1) + ' m';
+  $('oQ').textContent = $('Q').value + '%';
+  view.scale = +$('S').value / 10;
+}
+
+let acc = 0, frames = 0, msAcc = 0;
+function loop() {
+  requestAnimationFrame(loop);
+  if (!sim) return;
+  if (running) {
+    const t0 = performance.now();
+    // Advance a fixed slice of simulated time per frame so the animation runs at
+    // a steady rate regardless of what the CFL condition allows.
+    const budget = (1 / 30) * (sim._speed || 1);
+    let done = 0, guard = 0;
+    while (done < budget && guard++ < 400) {
+      const dt = Math.min(sim.maxDt(), budget - done);
+      if (!(dt > 0)) break;
+      done += sim.step(dt);
+    }
+    msAcc += performance.now() - t0; frames++;
+  }
+  view.draw(sim, { msl });
+  if (frames >= 15) {
+    $('r_ms').textContent = (msAcc / frames).toFixed(1);
+    msAcc = 0; frames = 0;
+    $('r_t').textContent = sim.t < 3600 ? sim.t.toFixed(1) + ' s' : (sim.t / 3600).toFixed(2) + ' h';
+    $('r_dt').textContent = sim.maxDt().toFixed(3) + ' s';
+    $('r_spd').textContent = sim.maxSpeed().toFixed(2) + ' m/s';
+    let wet = 0, tot = 0;
+    for (let j = 0; j < sim.ny; j++) for (let i = 0; i < sim.nx; i++) { tot++; if (sim.depth(i, j) > sim.minDepth) wet++; }
+    $('r_wet').textContent = (100 * wet / tot).toFixed(1) + '%';
+    $('r_vol').textContent = (Math.abs(sim.volume() - v0) / v0).toExponential(1);
+  }
+}
+
+for (const id of ['H', 'T', 'R', 'S', 'Q']) $(id).addEventListener('input', () => { syncOuts(); if (id === 'Q') build(); });
+for (const id of ['shoreline', 'mode']) $(id).addEventListener('input', build);
+$('reset').addEventListener('click', build);
+$('run').addEventListener('click', () => { running = !running; $('run').textContent = running ? 'pause' : 'run'; });
+
+syncOuts(); build(); loop();
+window.water = { get sim() { return sim; }, view, build, step: (n = 1) => { for (let i = 0; i < n; i++) sim.step(); } };
+</script>
+</body>
+</html>
