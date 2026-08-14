@@ -639,13 +639,21 @@ export function outflow(sim, i, j, side) {
  * Flather radiation condition: prescribe the INCOMING signal and let everything
  * else leave.
  *
- *     u = u_ext +/- sqrt(g/h) * (eta - eta_ext)
+ * THE FIRST VERSION OF THIS REFLECTED 98.19% OF AN OUTGOING PULSE -- measured
+ * against a solid wall at 98.2%, i.e. it was a mirror wearing a radiation
+ * condition's name. It clamped the ghost ELEVATION to the external value and
+ * applied the radiation formula only to the velocity, and a clamped elevation is
+ * a Dirichlet boundary, which reflects with coefficient -1. Nothing looked
+ * wrong: the tide went in, the basin responded, and every resonance number was
+ * quietly the domain talking to itself.
  *
- * This is the boundary a tide needs. A prescribed-elevation boundary is a
- * perfect mirror to anything travelling outward, so a domain driven by a
- * clamped tide slowly fills with its own reflections and the range at the head
- * of the bay comes out too large -- which reads exactly like the resonance you
- * were hoping to see. Flather lets the reflected wave out and keeps the forcing.
+ * The fix is to split the state into characteristics and replace ONLY the one
+ * that enters the domain. The outgoing invariant is taken from the interior and
+ * passed through untouched, which is what makes the boundary transparent.
+ *
+ * This is exact for a linear long wave at normal incidence. A steep or oblique
+ * wave still returns a little; tools/verify-tide.mjs measures the coefficient
+ * rather than assuming it, and reports a solid wall alongside as the control.
  *
  * @param etaExt (t) => elevation of the external tide/wave [m]
  * @param uExt   (t) => external normal velocity [m/s], usually 0
@@ -658,15 +666,27 @@ export function flather(etaExt, uExt = () => 0) {
     const g = sim.idx(i, j), s = sim.idx(si, sj);
     sim.b[g] = sim.b[s];
     const bed = sim.b[g];
-    const e0 = etaExt(sim.t), u0 = uExt(sim.t);
     const hInt = sim.h[s];
+    const e0 = etaExt(sim.t), u0 = uExt(sim.t);
     if (hInt <= sim.minDepth) { sim.h[g] = Math.max(0, e0 - bed); sim.hu[g] = 0; sim.hv[g] = 0; return; }
     const etaInt = bed + hInt;
-    const c = Math.sqrt(G / hInt);
-    // Sign: the outgoing characteristic leaves through this face.
+    const r = Math.sqrt(G / hInt);
+    // Sign of the OUTWARD normal: +1 where the domain lies to the right of the
+    // face (west, south), -1 where it lies to the left (east, north).
     const sgn = (side === 0 || side === 2) ? 1 : -1;
-    const un = u0 + sgn * c * (etaInt - e0);
-    sim.h[g] = Math.max(0, e0 - bed);
+    // Split into characteristics and replace only the one that enters.
+    //
+    //   incoming (prescribed):  Rin  = u_ext + sgn * eta_ext * sqrt(g/h)
+    //   outgoing (from inside): Rout = u_int - sgn * eta_int * sqrt(g/h)
+    //
+    // then u = (Rin + Rout)/2 and eta = sgn*(Rin - Rout)/(2 sqrt(g/h)).
+    const uInt = (side === 0 || side === 1)
+      ? sim.vel(sim.hu[s], hInt) : sim.vel(sim.hv[s], hInt);
+    const Rin = u0 + sgn * e0 * r;
+    const Rout = uInt - sgn * etaInt * r;
+    const un = 0.5 * (Rin + Rout);
+    const en = sgn * (Rin - Rout) / (2 * r);
+    sim.h[g] = Math.max(0, en - bed);
     if (side === 0 || side === 1) { sim.hu[g] = sim.h[g] * un; sim.hv[g] = sim.hv[s]; }
     else { sim.hv[g] = sim.h[g] * un; sim.hu[g] = sim.hu[s]; }
   };
