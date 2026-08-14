@@ -53,7 +53,7 @@ export const SHORELINES = {
     title: 'plane beach',
     blurb: 'A uniform 1:40 slope. The clean case: shoaling and breaking with nothing else going on.',
     expect: 'Wave height grows as h^(-1/4) (Green) until H/h reaches ~0.8, then breaks and decays through a surf zone. No alongshore variation anywhere.',
-    domain: { nx: 400, ny: 60, dx: 5, dy: 5 },
+    domain: { nx: 800, ny: 4, dx: 2.5, dy: 2.5 },
     offshoreDepth: 12,
     build({ slope = 1 / 40, offshoreDepth = 12, shoreAt = 1600 } = {}) {
       return (x) => {
@@ -69,7 +69,7 @@ export const SHORELINES = {
     title: 'barred beach',
     blurb: 'A longshore sandbar 250 m out, with a trough behind it. What most sandy coasts actually look like.',
     expect: 'Waves break ON THE BAR, partly reform in the deeper trough, then break a second time at the shore. Two surf zones, separated by a band of larger waves. A single-break model cannot produce this.',
-    domain: { nx: 400, ny: 60, dx: 5, dy: 5 },
+    domain: { nx: 800, ny: 4, dx: 2.5, dy: 2.5 },
     offshoreDepth: 12,
     build({ offshoreDepth = 12, shoreAt = 1750, barAt = 1450, barHeight = 2.6, barWidth = 90 } = {}) {
       return (x) => {
@@ -124,7 +124,7 @@ export const SHORELINES = {
     title: 'fringing reef and lagoon',
     blurb: 'A shallow reef crest with a flat lagoon behind it and a steep fore-reef in front.',
     expect: 'Nearly all the incident energy breaks on the crest in a very short distance. The lagoon carries small, short waves riding on a raised mean level -- WAVE SETUP -- because the momentum lost at the crest has to go somewhere. Setup should be a visible fraction of the breaker height.',
-    domain: { nx: 360, ny: 60, dx: 5, dy: 5 },
+    domain: { nx: 720, ny: 4, dx: 2.5, dy: 2.5 },
     offshoreDepth: 25,
     build({ offshoreDepth = 25, reefAt = 1150, crestDepth = 0.6, lagoonDepth = 3.5, shoreAt = 1700 } = {}) {
       return (x) => {

@@ -368,5 +368,64 @@ console.log('\n=== 7. convergence order ========================================
     `observed orders ${p1.toFixed(2)} and ${p2.toFixed(2)}`);
 }
 
+// ===========================================================================
+console.log(''); console.log('=== 8. numerical dissipation: can it carry a wave at all? ==========='); console.log('');
+// ===========================================================================
+//
+// A wave model that damps its own waves is not a wave model, and NOTHING else in
+// this suite would catch it: lake-at-rest is stationary, Ritter is a single
+// front, Thacker and the seiche are standing modes. A progressive wave crossing
+// many wavelengths is a separate question needing its own check.
+//
+// Measured on a PERIODIC domain holding a whole number of wavelengths, seeded
+// with an analytic right-going wave, with no boundaries at all. An earlier
+// version used two gauges in a bounded domain and read 35% where the truth is
+// 86%: a few percent of reflection off the outflow boundary sets up a standing
+// pattern, and a fixed gauge then reports its position in that pattern rather
+// than the wave. If a propagation measurement has a boundary in it, it is
+// measuring the boundary.
+//
+// These numbers are a RESOLUTION REQUIREMENT and the model should be quoted with
+// them. At 20 cells per wavelength half the height is gone after fifteen
+// wavelengths, and no coastal result at that resolution means anything.
+{
+  const h0 = 12, A = 0.02, T = 10, c0 = Math.sqrt(G * h0), Lw = c0 * T;
+  const seed = (sim, nx, dx) => {
+    const k = 2 * Math.PI / Lw;
+    for (let i = 0; i < nx; i++) {
+      const x = (i + 0.5) * dx, e = A * Math.cos(k * x), kk = sim.idx(i, 0);
+      sim.h[kk] = h0 + e; sim.hu[kk] = c0 * e;
+    }
+    sim.boundaries = { west: periodic, east: periodic, south: periodic, north: periodic };
+  };
+  const amp = (sim, nx) => { let m = 0; for (let i = 0; i < nx; i++) m = Math.max(m, Math.abs(sim.eta(i, 0))); return m; };
+  const results = [];
+  for (const cpw of [20, 40, 80]) {
+    const nx = cpw * 4, dx = Lw / cpw;
+    const sim = new ShallowWater({ nx, ny: 1, dx, bed: () => -h0, eta0: 0, manning: 0, cfl: 0.4 });
+    seed(sim, nx, dx);
+    while (sim.t < 15 * T) sim.step(Math.min(sim.maxDt(), 15 * T - sim.t));
+    const kept = amp(sim, nx) / A;
+    results.push({ cpw, kept });
+    console.log(`        ${String(cpw).padStart(3)} cells/wavelength: ${(100 * kept).toFixed(1)}% of amplitude after 15 wavelengths`);
+  }
+  check('amplitude retained at 40 cells/wavelength', results[1].kept, 1, 0.20,
+    'the documented minimum resolution for a wave result');
+  assert('amplitude retained at 80 cells/wavelength exceeds 92%', results[2].kept > 0.92,
+    `${(100 * results[2].kept).toFixed(1)}%`);
+  const a1 = -Math.log(results[0].kept), a2 = -Math.log(results[1].kept), a3 = -Math.log(results[2].kept);
+  const p1 = Math.log2(a1 / a2), p2 = Math.log2(a2 / a3);
+  assert('dissipation converges at close to 2nd order', p1 > 1.4 && p2 > 1.4,
+    `observed orders ${p1.toFixed(2)} and ${p2.toFixed(2)}; 2 is the scheme design order`);
+  // Control: the most diffusive limiter must be measurably worse, or this
+  // measurement is not sensitive to what it claims to measure.
+  const nx = 80, dx = Lw / 20;
+  const bad = new ShallowWater({ nx, ny: 1, dx, bed: () => -h0, eta0: 0, manning: 0, cfl: 0.4, limiter: 'minmod' });
+  seed(bad, nx, dx);
+  while (bad.t < 15 * T) bad.step(Math.min(bad.maxDt(), 15 * T - bad.t));
+  assert('the check can tell limiters apart', amp(bad, nx) / A < 0.5 * results[0].kept,
+    `minmod keeps ${(100 * amp(bad, nx) / A).toFixed(1)}% where the default MC keeps ${(100 * results[0].kept).toFixed(1)}%`);
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} -- ${checks - failures}/${checks} checks\n`);
 process.exit(failures ? 1 : 0);
