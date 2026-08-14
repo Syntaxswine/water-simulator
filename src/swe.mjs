@@ -40,10 +40,19 @@
 //   - Manning bed friction, solved semi-implicitly so a thin film cannot blow up
 //
 // WHAT THIS MODEL IS NOT. The shallow-water equations are non-dispersive: every
-// wave travels at sqrt(g*h) regardless of wavelength. That is correct to within
-// a few percent for kh < 0.5 -- tides, surges, tsunamis, and swell once it is
-// well inside the surf zone -- and increasingly wrong in deeper water, where the
-// truth is omega^2 = g*k*tanh(k*h). There is no dispersive term here and no
+// wave travels at sqrt(g*h) regardless of wavelength. "Correct to within a few
+// percent for kh < 0.5" was written here without a number behind it; measured
+// 2026-08-14 against src/waves.mjs's exact Airy relation, the celerity this
+// solver uses runs FAST by
+//
+//   kh    0.1    0.2    0.3    0.4    0.5    0.6    0.8    1.0    1.5    pi
+//   err  0.17%  0.66%  1.48%  2.60%  4.02%  5.70%  9.76%  14.6%  28.7%  77.6%
+//
+// so "a few percent below kh = 0.5" holds, and 4% AT 0.5 is the edge of it. Below
+// that -- tides, surges, tsunamis, and swell once it is well inside the surf zone
+// -- this is a good model, and it degrades fast above.
+//
+// There is no dispersive term here and no
 // Boussinesq mode anywhere in this repository: if you need one it has to be
 // written. (An earlier version of this comment pointed at src/boussinesq.mjs and
 // tools/dispersion.mjs. Neither file has ever existed. src/waves.mjs holds the
@@ -55,13 +64,22 @@
 // amplitude wave sharpens into a bore and the Riemann solver dissipates it
 // before it reaches the depth-limited breaking point. Fit p in H ~ h^p over a
 // plane beach (tools/waves.mjs planeBeach does exactly this, as an amplitude
-// sweep) and p comes out +0.152, -0.179, -0.236, -0.238 for offshore heights of
-// 0.8, 0.2, 0.05 and 0.012 m, against Green's law p = -0.25. So the small-
-// amplitude limit is recovered, and at 0.8 m the exponent has the WRONG SIGN:
-// that wave loses height as it shoals. Bed friction is not the cause -- with
-// Manning switched off the 0.8 m case moves only from 0.154 to 0.152. Do not
-// quote this solver for deep-water wind sea, and do not quote its shoaling for
-// waves steep enough to break before they arrive.
+// sweep, with Manning at 0 so the figure is the dispersion error on its own) and
+// p comes out +0.151, -0.210, -0.243, -0.243 for offshore heights of 0.8, 0.2,
+// 0.05 and 0.012 m, against Green's law p = -0.25. So the small-amplitude limit
+// is recovered, and at 0.8 m the exponent has the WRONG SIGN: that wave loses
+// height as it shoals. Bed friction is not the cause -- putting Manning back at
+// 0.022 moves the 0.8 m case only from 0.1509 to 0.1534. Do not quote this
+// solver for deep-water wind sea, and do not quote its shoaling for waves steep
+// enough to break before they arrive.
+//
+// Re-measured 2026-08-14 by running that case. The five numbers printed here
+// before were +0.152, -0.179, -0.236, -0.238 and "0.154 to 0.152": the H0 = 0.2 m
+// exponent had drifted by 0.031, the rest by 0.007 or less. The published figures
+// had fallen behind the solver, which is exactly the failure this comment style
+// exists to prevent, so: every number in this file is dated by the run that
+// produced it, and anything that could not be reproduced has been deleted rather
+// than rounded into agreement.
 // ---------------------------------------------------------------------------
 
 export const G = 9.80665;          // standard gravity [m/s^2]
@@ -80,11 +98,31 @@ function minmod(a, b) {
  * minmod always picks the smaller one-sided slope, so at a smooth crest -- where
  * the two one-sided slopes have opposite signs -- it returns ZERO and flattens
  * the extremum. Do that every step and a propagating wave bleeds amplitude even
- * over a flat bed with no physics to take it. Measured on a 10 s wave in 12 m of
- * water at 22 cells per wavelength: minmod lost a factor of 5.9 in amplitude over
- * 1100 m, which is eleven wavelengths of travel and about a tenth of the way
- * across any real bay. A wave model that cannot carry a wave to the beach is not
- * a wave model.
+ * over a flat bed with no physics to take it.
+ *
+ * Measured 2026-08-14: a 0.1 m, 10 s wave on a FLAT bed in 12 m of water,
+ * Manning 0, dx = 4.931 m so that L = 108.5 m is exactly 22 cells; wavemaker at
+ * the west, Flather radiation at the east. At a gauge 1100 m downwave -- 10.1
+ * wavelengths, about a tenth of the way across any real bay -- minmod retains
+ * 0.169 of its amplitude at the wavemaker and MC retains 0.686. The wave arrives
+ * 4.14x smaller under minmod. A wave model that cannot carry a wave to the beach
+ * is not a wave model.
+ *
+ * The note here previously said "a factor of 5.9 over 1100 m, which is eleven
+ * wavelengths". 1100 m is 10.1 wavelengths at this period and depth, not eleven,
+ * and 5.9 did not reproduce. Nor did the first re-measurement, which got 5.23 --
+ * with a REFLECTING east wall, so a partial standing wave sat over the gauge and
+ * MC came out "retaining" 1.33, i.e. more amplitude than the wavemaker made. That
+ * is how the setup gave itself away; 4.14 is from the radiating version, where
+ * the gauge sees a travelling wave and nothing else.
+ *
+ * tools/verify.mjs measures the same effect independently and reports a bigger
+ * gap -- "minmod keeps 3.9% where the default MC keeps 50.7%", i.e. 13x -- on its
+ * own resolution and path length. Both are real; the ratio is not a constant of
+ * the scheme, it grows with how far the wave has to travel and how coarse the
+ * grid is, which is precisely why a number like this is worthless without the
+ * configuration attached. That suite is the gate. This paragraph is an
+ * explanation, and it does not get to overrule it.
  *
  * MC allows up to twice the minmod slope, bounded by the central difference. It
  * is still TVD -- it will not manufacture oscillations at a bore -- but it holds
@@ -112,8 +150,18 @@ export class ShallowWater {
    * @param minDepth   below this a cell is dry [m]. A MODELLING choice, not a
    *   numerical fudge: below about a millimetre the shallow-water equations
    *   describe nothing real -- surface tension, bed roughness and the grain size
-   *   all exceed the film -- and a solver that takes such a cell seriously will
-   *   happily report it moving at 40 m/s, which is measured, not hypothetical.
+   *   all exceed the film. Measured 2026-08-14 on a dam break onto a dry bed
+   *   (400x4 at dx = 2.5 m, 10 m behind the dam, 300 steps at cfl 0.45), varying
+   *   nothing but this number:
+   *     1e-3 (default)   fastest wet cell 17.40 m/s in h = 1.6e-1 m    finite
+   *     1e-4             fastest wet cell 18.26 m/s in h = 1.1e-2 m    finite
+   *     1e-6             fastest wet cell 1.244e+65 m/s               NOT FINITE
+   *     1e-9             fastest wet cell 9.693e+67 m/s               NOT FINITE
+   *   So this is not a knob that trades a little accuracy for a little
+   *   robustness: three decades below the default the run destroys itself. The
+   *   doc here used to say such a cell would "happily report it moving at 40 m/s,
+   *   which is measured, not hypothetical". 40 m/s did not reproduce at any
+   *   setting tried, and it badly understates what happens.
    * @param cfl        Courant number; 0.45 is safe for 2D SSP-RK2 + MUSCL
    * @param coriolis   f [1/s]; 2*Omega*sin(lat). Zero for a beach, not for a shelf.
    */
@@ -229,20 +277,41 @@ export class ShallowWater {
     // ---- cell velocities, computed ONCE ----------------------------------
     //
     // The slope pass and the two interface passes all want u = hu/h at the same
-    // cells, and they used to ask for it separately: counted 4,066,992 vel()
-    // calls per step on a 320x320 grid, i.e. 39 per cell per step for 104,976
-    // cells. This one change is essentially the whole speedup of this file --
-    // 0.1230 -> 0.0503 s/step, minimum of 4 interleaved 100-step runs each --
-    // and end to end the same benchmark went 0.1181 -> 0.0485 s/step (200 steps,
-    // 4 runs each, minimum), a factor of 2.43.
+    // cells, and they used to ask for it separately.
+    //
+    // Counted 2026-08-14 by reverting this loop in a scratch copy and
+    // instrumenting vel(), on a 320x320 grid (324x324 with ghosts = 104,976
+    // cells):
+    //
+    //                        vel() calls per step    per cell
+    //     before, step()          4,126,800            39.3
+    //     before, step(dt)        3,922,000            37.4
+    //     after,  step()            829,504             7.9
+    //     after,  step(dt)          624,704             6.0
+    //
+    // step() self-times and therefore also runs maxDt(), which scans the grid
+    // again; every caller in tools/ supplies dt. This one change is essentially
+    // the whole speedup of this file: 0.1055 -> 0.0570 s/step, a factor of 1.85,
+    // minimum of 5 interleaved 100-step runs each.
+    //
+    // THE ABSOLUTE TIMES DO NOT TRAVEL and should not be read to two digits. The
+    // same shipped 100-step benchmark on this machine gave 0.0570, 0.0684, 0.0915
+    // and 0.1019 s/step in four sessions, depending on what else was running. The
+    // RATIO is the measurement, and it is taken interleaved so both variants meet
+    // the same machine in the same minute. The numbers previously written here --
+    // 4,066,992 calls, 0.1230 -> 0.0503 s/step, 2.43x -- came from a faster
+    // machine: the call count reproduces to 1.5%, the times do not reproduce at
+    // all, and they have been replaced rather than kept.
     //
     // It is a pure caching change and has to be provable as one: vel() is a pure
     // function of (hu, h), and nothing writes hu or h during a residual, so the
-    // cached value is the SAME double rather than an approximation of it. The
-    // 200-step state fingerprint is bit-identical before and after (FNV-1a over
-    // the raw bytes of h, hu, hv: 751585954432b699 either way), as are five other
-    // scenarios chosen to hit the dry front, first order, minmod, Coriolis and
-    // both dt branches.
+    // cached value is the SAME double rather than an approximation of it. Checked
+    // by fingerprinting 200 steps (FNV-1a over the raw bytes of h, hu, hv) of the
+    // shipped code against the reverted copy, over six scenarios chosen to reach
+    // the dry front, first order, minmod, Coriolis, a moving shoreline and both
+    // dt branches. All six bit-identical -- see the note at hllc(), which was
+    // checked in the same pass and includes what it took to make that check
+    // capable of failing.
     const U = this.uu, V = this.vv, NC = U.length;
     for (let k = 0; k < NC; k++) { const hk = h[k]; U[k] = this.vel(hu[k], hk); V[k] = this.vel(hv[k], hk); }
 
@@ -263,8 +332,22 @@ export class ShallowWater {
             // island stands above the water. Feeding that into the slope of eta
             // makes the wet neighbour reconstruct a surface tilted up onto the
             // shore, the hydrostatic reconstruction no longer cancels, and a
-            // still lake with an island in it develops a permanent 0.34 m/s
-            // current radiating outward. Measured, before this guard.
+            // still lake with an island in it starts to move.
+            //
+            // Measured 2026-08-14 by deleting these four lines and running a
+            // 200x200 lake at dx = 10 m: bed -10 m with a Gaussian island
+            // (sigma 220 m, crest +4 m), eta0 = 0, Manning 0, all four walls
+            // reflecting, 400 steps to t = 91 s.
+            //
+            //   guard present   max speed 1.055e-13 m/s   max |eta| 7.105e-15 m
+            //   guard deleted   max speed 1.490e+00 m/s   max |eta| 4.784e-02 m
+            //                   and 4.474 m/s at its peak during the run
+            //
+            // Machine epsilon against 1.5 m/s of permanent outward current and
+            // 5 cm of standing set-up, on a lake that is supposed to be flat.
+            // The note here previously said 0.34 m/s without recording the
+            // geometry that produced it; the number depends on the island, so
+            // this one states the island.
             //
             // Zeroing eta, bed and velocity slopes TOGETHER drops the cell to
             // the first-order scheme, which Audusse's hydrostatic reconstruction
@@ -350,17 +433,38 @@ export class ShallowWater {
 
     // ---- positivity limiter, then accumulate ------------------------------
     //
-    // A cell cannot give away more water than it has. The leading film of a dam
-    // break is thinner than one step's worth of outflow -- measured, h = 3e-4 m
-    // draining at 12 m/s -- so a cell empties past zero, gets floored back to
-    // zero, and leaves a HOLE in the middle of the sheet. Its neighbour then
-    // accelerates into that hole: 166 m/s, then 1e40 m/s, and the run stops
-    // advancing while remaining perfectly finite the whole way.
+    // A cell cannot give away more water than it has. Let it, and it empties past
+    // zero, gets floored back to zero by dryClean(), and leaves a HOLE in the
+    // middle of the sheet; the neighbour then accelerates into that hole and the
+    // run stops meaning anything while staying perfectly FINITE the whole way,
+    // which is the part that makes it dangerous rather than merely wrong.
     //
     // So scale the outgoing fluxes of any cell that would over-draw, by the one
     // factor that just empties it. Because the SAME scaled flux is handed to
     // both neighbours, mass is still conserved exactly; and because a still lake
     // has zero flux everywhere, theta is 1 and well-balancing is untouched.
+    //
+    // Measured 2026-08-14 on a dam break onto a DRY bed (400x4 at dx = 2.5 m,
+    // 10 m behind the dam, Manning 0, 300 steps at the CFL limit) by counting
+    // the cell-steps where theta < 1, and separately by deleting this block:
+    //
+    //   cfl          theta < 1   smallest theta    fastest wet cell, block DELETED
+    //   0.45 shipped        0        1             1.740e+01 m/s   (finite)
+    //   0.80               36        0             1.136e+04 m/s   (finite)
+    //   0.95               28        9.08e-21      2.262e+40 m/s   (finite)
+    //
+    // Two things worth saying plainly. AT THE SHIPPED CFL OF 0.45 THIS LIMITER
+    // NEVER FIRES: theta < 1 on zero cell-steps in that dam break, and on zero
+    // cell-steps in a planeBeach run-up at H0 = 0.8 m over 3888 steps. It is
+    // insurance against a Courant number this solver does not use by default, and
+    // calling it load-bearing for the shipped configuration would be a lie. But
+    // when it does fire, the thing it prevents is exactly as advertised: 2.3e40
+    // m/s, with every field still finite and the run still "advancing".
+    //
+    // The note here previously read "h = 3e-4 m draining at 12 m/s ... 166 m/s,
+    // then 1e40 m/s", with no Courant number attached. The 1e40 reproduces
+    // (2.262e40 at cfl 0.95). The 3e-4 m / 12 m/s / 166 m/s trio did not, in any
+    // configuration tried, so it is gone rather than carried on trust.
     const theta = this.theta;
     theta.fill(1);
     if (dt > 0) {
@@ -501,12 +605,26 @@ export class ShallowWater {
     // Math.min(dtMax, this.dxLimit ?? Infinity), and dxLimit was never assigned
     // anywhere in this repository, so the min() was always with Infinity.
     //
-    // SMALL: maxDt() costs 0.75 ms per call timed where it actually runs, i.e.
-    // straight after a residual has evicted the grid from cache, against a step
-    // that cost 119.34 ms before this work and 48.89 ms after. So this removes
-    // 0.6% of the old step and it is invisible in an A/B against machine noise.
-    // It is still the right change -- a full-grid scan whose answer is discarded
-    // is not something to leave in the hot path -- but it is not the speedup.
+    // SMALL, AND THE INSTRUMENT REFUSES TO SAY HOW SMALL. Timing maxDt() where
+    // it actually runs -- straight after a residual, with the grid evicted from
+    // cache -- means taking the difference of two nearly equal ~70 ms numbers.
+    // Five attempts at that on a 320x320 grid, 2026-08-14, each the minimum of
+    // four interleaved 80-step runs:
+    //
+    //   0.468 ms (0.65%)   2.884 ms (3.80%)   2.115 ms (3.27%)
+    //   0.669 ms (0.66%)   2.198 ms (3.85%)
+    //
+    // A sixfold spread. So the honest statement is a bound, not a figure: maxDt()
+    // costs somewhere between 0.5 and 3 ms against a step of 60-76 ms, i.e. under
+    // 4% and probably nearer 1%, and this method cannot do better. The note here
+    // previously read "0.75 ms per call ... against a step that cost 119.34 ms
+    // before this work and 48.89 ms after ... 0.6% of the old step"; those came
+    // from a machine this one is not, none of them reproduced, and quoting a
+    // difference of two large numbers to three significant figures was the error.
+    //
+    // The conclusion is unchanged and was never the point of contention: removing
+    // it is right because a full-grid scan whose answer is discarded does not
+    // belong in the hot path, NOT because it was the speedup. It was not.
     const h = dt == null ? this.maxDt() : dt;
     if (!(h > 0) || !isFinite(h)) return 0;
 
@@ -553,15 +671,19 @@ export class ShallowWater {
   /**
    * Total energy: kinetic + potential relative to the datum [J/rho].
    *
-   * NO CALLER. Nothing in src/ or tools/ uses this, so no check exercises it and
-   * it cannot be called verified. It is kept because it is the one diagnostic
-   * that tells energy the scheme DISSIPATED apart from energy that left through
-   * a boundary, which is what every argument about a radiation condition turns
-   * into, and because writing it later against a running solver is how people
-   * end up calibrating a diagnostic to the answer it is supposed to judge.
+   * NO CALLER. Nothing in src/ or tools/ uses this -- re-checked 2026-08-14 by
+   * grepping the tree for `.energy()`, and the only hit is this definition -- so
+   * no check exercises it and it cannot be called verified. It is kept because it
+   * is the one diagnostic that tells energy the scheme DISSIPATED apart from
+   * energy that left through a boundary, which is what every argument about a
+   * radiation condition turns into, and because writing it later against a
+   * running solver is how people end up calibrating a diagnostic to the answer it
+   * is supposed to judge.
    *
-   * Checked once by hand (2026-08-14) against closed forms rather than against
-   * this solver's own output, on a 40x40 lake at dx = 25 m:
+   * Checked by hand against closed forms rather than against this solver's own
+   * output, on a 40x40 lake at dx = 25 m. Re-run 2026-08-14 during an audit of
+   * every number in this file: all three lines below came back digit for digit,
+   * which is the only claim in here that needed no correction.
    *   still, bed at datum, h = 10 m   4.90332500000010788e+8  vs g/2 h^2 A
    *                                   4.90332500000000000e+8  rel 2.2e-14
    *   same lake at u = 2 m/s          5.10332500000011206e+8  vs (h u^2/2 + g h^2/2) A
@@ -640,18 +762,37 @@ export class ShallowWater {
 // ---------------------------------------------------------------------------
 // SHARED SCRATCH -- safe, and worth less than it looks. The two physical fluxes
 // below used to be a fresh pair of arrays on every call that reached the contact
-// branch: counted on a 320x320 grid, 410,880 hllc() calls per step of which
-// 321,428 reach that branch, i.e. 642,856 short-lived arrays per step.
+// branch.
+//
+// Counted 2026-08-14 on a 320x320 grid: 410,880 hllc() calls per step. That one
+// is pure geometry -- 2 RK stages x (320x321 x-faces + 321x320 y-faces) -- so it
+// does not depend on the flow, and it reproduces the figure written here before
+// exactly. How many reach the contact branch DOES depend on the flow, and the
+// old note gave one number for it without saying which flow: 100% on an all-wet
+// field, but 78.2% (48,525,733 of 62,051,400) over a whole planeBeach run, where
+// a dry beach sends the rest out through the dry-state or supercritical exits.
+// So between 642,000 and 822,000 short-lived arrays per step.
 //
 // THAT COUNT IS NOT WHERE THE TIME WENT, and the honest thing is to say so.
-// Hoisting them changed the step time by nothing measurable: 0.1230 s/step with
-// the allocations against 0.1231 without (minimum of 4 interleaved 100-step runs
-// each, 320x320, on a machine with other work on it). V8 allocates a small array
-// by bumping a pointer, and these die before the next scavenge, so the collector
-// never copies them. The change is kept because it is free and bit-identical, and
-// because 642,856 allocations per step is a genuine cost under a different engine
-// or a larger surviving set -- but the profile said the arithmetic in residual()
-// was the hot loop, not this, and the profile was right.
+// Hoisting them changed the step time by nothing measurable: 0.0570 s/step shared
+// against 0.0564 s/step allocating -- the SHARED version came out 0.9% slower,
+// which is how you know you are reading noise (5 interleaved 100-step runs each,
+// minimum, 320x320). V8 allocates a small array by bumping a pointer, and these
+// die before the next scavenge, so the collector never copies them. The change is
+// kept because it is free and bit-identical, and because 800,000 allocations per
+// step is a genuine cost under a different engine or a larger surviving set --
+// but the profile said the arithmetic in residual() was the hot loop, not this,
+// and the profile was right.
+//
+// Bit-identical, checked: 200-step FNV-1a fingerprints of h, hu and hv agree
+// between the shipped code, this allocation reverted, and the velocity cache
+// reverted, across six scenarios (wavy lake; dam break on a dry bed; order = 1;
+// minmod; Coriolis; an island with a wavemaker and a self-timed dt). The
+// fingerprint was then MUTATION-TESTED, because a check that cannot fail proves
+// nothing: nudging one cell by 1e-12 m or 1e-9 m is detected, and the first
+// attempt at that control used 1e-15 m on h = 18.87 m, where the double spacing
+// is 4.4e-15 -- the nudge was a no-op and the "control" was passing by doing
+// nothing.
 //
 // Safety: the solver is single-threaded and hllc() is not re-entrant -- no await,
 // no callback, and nothing else in this file reads these two arrays -- so one
@@ -739,13 +880,24 @@ export function outflow(sim, i, j, side) {
  * Flather radiation condition: prescribe the INCOMING signal and let everything
  * else leave.
  *
- * THE FIRST VERSION OF THIS REFLECTED 98.19% OF AN OUTGOING PULSE -- measured
- * against a solid wall at 98.2%, i.e. it was a mirror wearing a radiation
- * condition's name. It clamped the ghost ELEVATION to the external value and
- * applied the radiation formula only to the velocity, and a clamped elevation is
- * a Dirichlet boundary, which reflects with coefficient -1. Nothing looked
- * wrong: the tide went in, the basin responded, and every resonance number was
- * quietly the domain talking to itself.
+ * THE FIRST VERSION OF THIS REFLECTED 98.19% OF AN OUTGOING PULSE. It clamped the
+ * ghost ELEVATION to the external value and applied the radiation formula only to
+ * the velocity, and a clamped elevation is a Dirichlet boundary, which reflects
+ * with coefficient -1. Nothing looked wrong: the tide went in, the basin
+ * responded, and every resonance number was quietly the domain talking to itself.
+ *
+ * Re-measured 2026-08-14, and this is the one historical claim in this file that
+ * could be checked against the real thing rather than a reconstruction: the
+ * pre-fix function was recovered with `git show 0bb0817^:src/swe.mjs` and run
+ * through the section-3 rig of tools/verify-tide.mjs alongside today's, so all
+ * three numbers come off the same ruler.
+ *
+ *   solid wall (the control)                98.19%
+ *   Flather at 0bb0817^, the version above  98.19%
+ *   Flather as shipped                       0.12%
+ *
+ * The old boundary returned 100.0% of what a solid wall returns, to four figures.
+ * "A mirror wearing a radiation condition's name" was not a figure of speech.
  *
  * The fix is to split the state into characteristics and replace ONLY the one
  * that enters the domain. The outgoing invariant is taken from the interior and
@@ -806,23 +958,44 @@ export function periodic(sim, i, j, side) {
  * A sponge layer: relax the solution toward a reference over the last `width`
  * cells, so an outgoing wave is absorbed rather than reflected.
  *
- * UNUSED AND UNVERIFIED, and this docstring used to claim otherwise. It said
- * "tools/verify.mjs measures what the pair actually absorb". There is no such
- * check. Nothing in this repository calls makeSponge: tools/waves.mjs imports
- * the name and then deliberately does not use it, because a sponge on the
- * WAVEMAKER boundary damps the incident wave -- its comment records a requested
- * 0.8 m wave arriving as 0.16 m. So the absorption of this function has never
- * been measured, by anything, and the reasoning above about Flather's residual
- * reflection is an argument for why a sponge might help, not evidence that this
- * one does.
+ * TWO CORRECTIONS TO WHAT THIS DOCSTRING USED TO SAY.
  *
- * It is kept rather than deleted only because the export is imported by
- * tools/waves.mjs, and a named import of a missing export is a link-time
- * SyntaxError -- the tool would not start, and tools/ is not mine to edit in the
- * same change. Delete the function and that import together, or write a check
- * that sends a pulse into it and measures what comes back. An absorber nobody
- * has measured is exactly the thing that quietly eats the signal you came to
- * measure.
+ * It said UNUSED -- "Nothing in this repository calls makeSponge: tools/waves.mjs
+ * imports the name and then deliberately does not use it." That is false.
+ * tools/waves.mjs calls it inside simulate(), as
+ * `if (sponge) sim.forcing = makeSponge(sim, { side: 'east', etaRef: msl,
+ * ...sponge })`, and the `shoal` case switches it on with `{ width: 40, strength:
+ * 0.08 }` because that case ends in open water with no beach to absorb anything.
+ * What tools/waves.mjs declines to do is put one on the WAVEMAKER boundary, which
+ * is a different statement entirely. The offshore-shoal result depends on this
+ * function, so "delete it" was bad advice.
+ *
+ * It said UNVERIFIED, and that WAS true: nothing had ever measured what it
+ * absorbs. Measured 2026-08-14 -- a right-going Gaussian pulse (A = 0.1 m, sigma
+ * 150 m) down a flat 10 m channel, dx = 5 m, Manning 0, gauge at x = 1503 m,
+ * taking the largest return at that gauge after the pulse has reached the far
+ * end:
+ *
+ *   solid wall (the control)           98.74%
+ *   Flather radiation                   0.12%
+ *   sponge width 20, strength 0.06      0.13%
+ *   sponge width 40, strength 0.08      0.12%
+ *
+ * So it works, and on this problem it is indistinguishable from Flather. The
+ * control returns 98.74%, so the measurement can tell a mirror from an absorber.
+ * This is one long wave at normal incidence and claims nothing beyond that.
+ *
+ * NOT ON THE INCOMING BOUNDARY, and the size of that mistake is worth recording.
+ * Same measurement rig on planeBeach, a 0.8 m 14 s wave, gauge at x = 400 m:
+ *
+ *   no sponge                       0.7799 m arrives
+ *   west sponge w20, strength 0.06  3.150e-05 m
+ *   west sponge w40, strength 0.08  3.711e-12 m
+ *
+ * That is annihilation, not attenuation. The figure carried here before -- "a
+ * requested 0.8 m wave arrived as 0.16 m", quoted from a comment in
+ * tools/waves.mjs -- does not reproduce at either setting, and understates what
+ * happens by four to eleven orders of magnitude.
  *
  * Note also that the relaxation rate is `strength * dt * 60`: `strength` is a
  * fraction per 1/60 s frame, not a rate per second.

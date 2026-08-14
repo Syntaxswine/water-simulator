@@ -1,0 +1,35 @@
+# Line endings are the repository's business, not the clone's.
+#
+# WHAT WENT WRONG WITHOUT THIS FILE. tools/mutants.mjs builds its multi-line
+# patch anchors with lines.join('\n') and looks for them in the text of
+# src/swe.mjs. On a default Windows clone -- core.autocrlf=true, which is what
+# `git config --global core.autocrlf` reports on this machine -- the working
+# tree is checked out CRLF, and an LF anchor cannot match CRLF text.
+#
+# Measured, on a deliberately CRLF copy of this tree (every tracked .mjs rewritten
+# with \r\n, nothing else changed): `node tools/mutants.mjs --anchors` printed
+# "9/16 anchors found exactly once" and exited 1. The seven that failed were
+# exactly the seven mutants whose anchors span more than one line -- vel-raw,
+# vel-max-eps, manning-explicit, wellbalance-off, mc-zero, hllc-dry-speeds,
+# rk2-one-stage. Every single-line anchor still matched, because a single-line
+# anchor contains no newline to disagree about. On the LF tree the same command
+# prints 16/16 and exits 0.
+#
+# That is the repository's headline instrument reporting a hard failure to
+# anyone who clones it on Windows. tools/mutants.mjs has since been taught to
+# normalise CRLF to LF when it reads source, so it no longer depends on this
+# file -- but the repository should not have depended on the checkout in the
+# first place, and the next tool to match a multi-line string would have walked
+# into the same wall.
+#
+#   text=auto   git decides which files are text and normalises them to LF in
+#               the object database.
+#   eol=lf      those files are checked out with LF on every platform, whatever
+#               core.autocrlf says locally.
+#
+# Everything tracked here is text (11 .mjs, 1 .md, 1 .html, 1 .json, plus
+# .gitignore and an empty .nojekyll), so one line covers the tree. Add explicit
+# `-text` or `binary` entries ABOVE this line if an image or a data blob is ever
+# committed: `text=auto` guesses well, but a guess is not a guarantee, and a
+# binary normalised as text is corrupted rather than merely inconvenient.
+* text=auto eol=lf

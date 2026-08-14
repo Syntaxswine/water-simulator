@@ -23,7 +23,15 @@
 //
 //   node tools/waves.mjs [case]
 //
+// where [case] must name one of the eight in CASES. Exit 0 all pass, 1 a check
+// failed, 2 the case name was not recognised.
+//
 // WHAT WAS WRONG BEFORE, all of it found by a reviewer running the file:
+//
+//   * `node tools/waves.mjs bogusCase` printed "ALL PASS -- 0/0 checks" and
+//     exited 0. Measured. The selector accepted any string, so a typo tested
+//     nothing and called it success. See CASES, below, for the three guards
+//     that replaced it and what each of them catches.
 //
 //   * Gauges were recorded on every round(ny/24)th row, and headlandBay and
 //     submarineCanyon then asked for rows that were not among them. rec.get()
@@ -408,8 +416,57 @@ function smoothOverWavelength(prof, dx, period) {
   });
 }
 
+// ===========================================================================
+// Case selection, and the three ways it is now allowed to fail
+//
+// WHAT WAS WRONG, measured before the fix:
+//
+//     $ node tools/waves.mjs bogusCase
+//     ALL PASS -- 0/0 checks
+//     EXIT=0
+//
+// `want` was `(k) => !only || only === k`, which accepts ANY argument. A typo
+// matched no case, ran nothing, and reported success. src/shorelines.mjs has
+// thrown on an unknown shoreline name since it was written; this path never
+// did, and it is the one a human types. A suite that can report success having
+// tested nothing is the exact failure class this file exists to catch.
+//
+// Three guards, and each of them can fail:
+//
+//   1. an unknown argument is a hard error on stderr with a non-zero exit;
+//   2. want() THROWS if the source asks for a case that is not in CASES, so the
+//      list cannot silently fall out of step with the `if (want(...))` blocks
+//      below -- otherwise fixing (1) would just move the typo one line up;
+//   3. the summary fails if zero checks ran, and (with no argument) if any
+//      declared case did not run at all. That catches routes (1) and (2) do
+//      not, such as a block left behind a condition that is never true.
+//
+// Exit codes: 0 all pass, 1 a check failed, 2 the command line was wrong. The
+// last is separated so a wrapper can tell "the physics is broken" from "you
+// misspelled the case name".
+// ===========================================================================
+const CASES = ['damping', 'planeBeach', 'snell', 'barredBeach', 'headlandBay',
+  'submarineCanyon', 'shoal', 'fringingReef'];
 const only = process.argv[2];
-const want = (k) => !only || only === k;
+if (only !== undefined && !CASES.includes(only)) {
+  console.error('');
+  console.error(`  ERROR: unknown case "${only}".`);
+  console.error(`  Known cases: ${CASES.join(', ')}`);
+  console.error('  With no argument, every case runs.');
+  console.error('');
+  process.exit(2);
+}
+const ran = new Set();
+const want = (k) => {
+  if (!CASES.includes(k)) {
+    throw new Error(`waves.mjs: want("${k}") names a case that is not in CASES.`
+      + ` The case list and the case blocks have fallen out of step; add it to CASES`
+      + ` or fix the spelling. Known: ${CASES.join(', ')}`);
+  }
+  const yes = !only || only === k;
+  if (yes) ran.add(k);
+  return yes;
+};
 
 // ===========================================================================
 if (want('damping')) {
@@ -1186,7 +1243,31 @@ if (want('fringingReef')) {
   console.log(`        the reef removes ${(100 * dissip).toFixed(0)}% of the offshore wave height`);
 }
 
+// ===========================================================================
+// The summary is itself a check.
+//
+// Guard 3 of the three described at CASES above. `checks === 0` used to print
+// ALL PASS; it is now a failure in its own right, and it is counted separately
+// from `failures` so the "N/M checks" line stays arithmetically honest (with
+// zero checks there is no denominator to be a fraction of).
+// ===========================================================================
+let fatal = 0;
+if (checks === 0) {
+  console.log('');
+  console.log('  FAIL  zero checks ran -- a suite that measures nothing cannot pass');
+  fatal++;
+}
+if (!only) {
+  const missing = CASES.filter((k) => !ran.has(k));
+  if (missing.length) {
+    console.log('');
+    console.log(`  FAIL  run with no argument, but ${missing.length} declared case(s) never executed: ${missing.join(', ')}`);
+    fatal++;
+  }
+}
+const bad = failures + fatal;
 console.log('');
-console.log(`${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} -- ${checks - failures}/${checks} checks`);
+console.log(`${bad === 0 ? 'ALL PASS' : bad + ' FAILURES'} -- ${checks - failures}/${checks} checks`
+  + ` over ${ran.size}/${CASES.length} case${ran.size === 1 ? '' : 's'}`);
 console.log('');
-process.exit(failures ? 1 : 0);
+process.exit(bad ? 1 : 0);
