@@ -5,10 +5,11 @@
 //   node tools/mutants.mjs --list       (print the mutant list, run nothing)
 //   node tools/mutants.mjs --anchors    (apply every patch, run no suite; ~1 s.
 //                                        This is the check to run after touching
-//                                        src/swe.mjs, and it is the one that
-//                                        fails when the anchors go stale)
+//                                        src/swe.mjs OR src/tide.mjs, and it is
+//                                        the one that fails when anchors go stale)
 //   node tools/mutants.mjs --only vel   (mutants whose id or name contains "vel")
-//   node tools/mutants.mjs --jobs 4     (concurrency; default 6)
+//   node tools/mutants.mjs --jobs 4     (concurrency; the default is sized from
+//                                        the machine and printed in the banner)
 //
 // The usage line above used to read "(~4 min, 15 mutants, 3 suites)" and all
 // three numbers had drifted -- there were 16 mutants in the list when it still
@@ -90,13 +91,27 @@
 //
 // RUNTIME is bought by choosing WHICH suite to run per mutant, not by shortening
 // the suites. Each mutant declares the suite whose checks are aimed at the thing
-// it breaks. Baselines, measured by the clean run of 2026-08-14 that added
-// waves.mjs -- six of them started at once, so each is an upper bound on what it
-// would cost alone: verify-physics 8.6 s, waves:damping 2.6 s,
-// waves:fringingReef 25.7 s, waves:snell 40.6 s, verify 99.6 s, verify-tide
-// 113.3 s. That run did 32 mutated suite runs plus those six baselines, six at a
-// time, in 305.3 s of wall clock. The figure is PRINTED at the end of every run
-// as well, because this line is a comment and the printed one is a measurement.
+// it breaks.
+//
+// THE FIGURES THAT USED TO BE HERE WERE WRONG BY A FACTOR OF THREE. They read
+// "verify-physics 8.6 s ... verify-tide 113.3 s. That run did 32 mutated suite
+// runs plus those six baselines, six at a time, in 305.3 s of wall clock."
+// Measured 2026-08-14, each suite run alone on an idle 16-core machine:
+// verify-physics 8.2 s, verify-tide 343.3 s. verify-tide had TRIPLED -- hostile
+// review kept adding to it, and it was measured at 29 checks in the morning of
+// the day this paragraph was rewritten, 57 by mid-afternoon and larger again by
+// evening -- while this comment went on quoting the figure from before any of
+// it. So the per-suite costs are no longer written down here at all, beyond the
+// two that justify a decision in this file (the sort below and the default
+// concurrency): the run BASELINES every suite it is about to use and prints the
+// table three lines under the banner, and prints its own wall clock at the end.
+// Read those. A cost in a comment is a claim with nothing checking it.
+//
+// What the shape of those costs buys is worth stating, though, because it does
+// not change: verify-physics is forty times cheaper than verify-tide, so a
+// mutant aimed at the right suite costs almost nothing and a mutant aimed at
+// the wrong one costs the whole run. That is the only reason the `suites` field
+// exists.
 //
 // The slow waves cases are deliberately NOT used. Measured on the same tree, one
 // case per process, all eight at once: see the note above SUITES for the table.
@@ -106,17 +121,40 @@
 // remaining suite before calling anything a survivor, because "survived" is a
 // strong claim and it should cost the harness something to make it.
 //
-// KNOWN SURVIVORS. Six mutations are declared here that no check in this
-// repository catches. They come from the reviewer who found them, they are run
-// every time like everything else, and they are reported in a table of their
-// own with the reason. They do NOT fail the run: a hole that is measured,
-// named and printed is a different thing from a hole nobody has noticed, and
-// the point of listing them is that the gap is VISIBLE rather than absent.
-// What they are not is a known correctness gap -- the reviewer could not make
-// any of them change an answer on any closed-form benchmark either, so what is
-// established is that these six are not distinguishable by anything this
-// repository currently measures, not that the solver is wrong. If one of them
-// is ever CAUGHT the run fails, loudly, because the declaration has gone stale.
+// KNOWN SURVIVORS are mutations declared here that no check in this repository
+// catches. THE COUNT IS NOT WRITTEN DOWN HERE. This paragraph used to open
+// "Six mutations are declared here", which was true on the day it was written
+// and is the same disease as the usage line at the top: a count in a comment is
+// a claim with nothing checking it. The run prints the counts instead, in a
+// `=== counts ===` block at the end that names every bucket and sums to the
+// number of mutants run.
+//
+// They come from the reviewers who found them, they are run every time like
+// everything else, and they are reported in a table of their own with the
+// reason. They do NOT fail the run: a hole that is measured, named and printed
+// is a different thing from a hole nobody has noticed, and the point of listing
+// them is that the gap is VISIBLE rather than absent. If one of them is ever
+// CAUGHT the run fails, loudly, because the declaration has gone stale.
+//
+// A KNOWN SURVIVOR IS NOT A CLAIM THAT THE MUTATION DOES NOTHING, and the two
+// batches of them differ on exactly that point. For the reviewer's original six
+// the reviewer could not make any of them change an answer on a closed-form
+// benchmark either, so the honest summary there is "indistinguishable by
+// anything measured". The one left over from the 2026-08-14 suite audit is not
+// like that: hstar-half demonstrably moves the solver -- an 81% wider HLLC fan
+// on a converging jump, computed this session -- and survives because nothing
+// asserts the quantity it moves. That is the sharper kind of hole, because
+// there is a specific number to go and pin down.
+//
+// THE LIST IS MEANT TO SHRINK, and it does. Of the nine mutations that audit
+// found, THREE were byte-identical -- cmp-clean against the unmutated stdout,
+// because the tide exports they touch were never called by anything -- and the
+// other six moved real physics behind a check that was one-sided, band-shaped
+// or absent. Eight of the nine were caught by checks that landed the same
+// afternoon; one of those checks quotes this file's own mutation back at it
+// ("the same rig with theta halved leaves 2.500e-1 m"), which is what a named,
+// printed hole is for. None of them is a known correctness gap; what is
+// established is only what this repository can and cannot see.
 //
 // THE REPOSITORY IS NEVER WRITTEN TO. Everything happens under os.tmpdir(). Two
 // guards, both able to fail: every write asserts its path is inside the scratch
@@ -660,30 +698,349 @@ const MUTANTS = [
   },
 
   // =========================================================================
-  // KNOWN SURVIVORS.
+  // FROM THE 2026-08-14 MUTATION AUDIT OF tools/verify-physics.mjs AND
+  // tools/verify-tide.mjs.
   //
-  // Six mutations that nothing in this repository catches. They are the
-  // reviewer's, found by a pass over the solver that this harness had not
-  // covered, and they are declared here rather than left out so that the gap is
-  // printed on every run instead of being invisible.
+  // Nine mutations that got through every check in this repository -- 146 of
+  // them that morning, 43 in verify-physics and 29 in verify-tide plus verify's
+  // 35 and waves's 39. They are here so that whether each one is caught is a
+  // PRINTED FACT on every run instead of something the next reviewer has to
+  // rediscover by hand. Any that are still not caught are in the known-survivor
+  // block below with a reason, on the same terms as the reviewer's original six.
   //
-  // WHAT THIS IS AND IS NOT. The reviewer could not make any of the six change
-  // an answer on any closed-form benchmark either -- not Stoker, not Ritter,
-  // not Thacker. So what is established is that these six are indistinguishable
-  // from the shipped solver BY ANYTHING CURRENTLY MEASURED. That is a coverage
-  // gap. It is NOT a known correctness gap, and it is not evidence that the
-  // shipped choice is arbitrary: three of them (Einfeldt vs Davis speeds, the
-  // HLLC contact estimate, the CFL number) are cases where the shipped version
-  // is the one with the better guarantee and the alternative is merely not
-  // WORSE on anything measured so far.
+  // FOUR OF THEM ARE THE FIRST MUTATIONS THIS HARNESS HAS EVER PUT IN
+  // src/tide.mjs, and that is most of the point of them. Grepped 2026-08-14:
+  // tools/verify-tide.mjs is the only file under tools/ that imports that
+  // module -- index.html is the repository's only other importer. So for a tide
+  // mutation verify-tide is not the cheapest suite that might catch it, it is
+  // the ONLY suite that can, and declaring one of these anywhere else would be
+  // declaring a suite that cannot see the file. It is also why they are the
+  // expensive entries in this list: verify-tide is 343.3 s measured alone on
+  // this machine against 8.2 s for verify-physics, and there is no cheaper aim
+  // to take.
   //
-  // Each still declares a suite and is still run, because a declaration nobody
-  // re-measures is exactly the kind of stale claim this file exists to stop.
-  // They are declared against verify-physics, the cheapest suite, plus the
-  // cheap waves cases for the two whose effect is a wave effect. If one of them
-  // is ever CAUGHT the run FAILS -- being caught is good news, but it means the
-  // sentence "we cannot catch this" has become false and the list must be
-  // edited before it misleads someone.
+  // THE n/N IN THE `found` NOTES BELOW IS FROM THE RUN THAT MEASURED IT, and
+  // BOTH halves of it move. verify-physics went 43 -> 47 -> 75 checks over the
+  // afternoon these entries were written and verify-tide 29 -> 57 -> 64, because
+  // two other passes were closing these exact holes at the same time -- and the
+  // numerator moved with it: resper-2L was 4 red when it was first caught and 11
+  // in the green run three hours later, flather-dirichlet 10 then 12. An earlier
+  // draft of this paragraph asserted that the numerator at least held still.
+  // It did not. So the figures quoted below are dated, the FAIL TEXT is what is
+  // stable and is quoted verbatim, and the live n/N is printed by every run in
+  // the detail block -- read that, not this. Where a note says a mutation was
+  // BYTE-IDENTICAL against a named earlier version of a suite, that is a cmp of
+  // the whole stdout with the character count given, which is the one claim here
+  // that no n/N can express.
+  // =========================================================================
+  {
+    id: 'bstar-average',
+    name: 'hydrostatic reconstruction datum -> mean bed',
+    breaks: 'the Audusse datum. Both sides of a face have to be reconstructed down from '
+      + 'the SAME bed and it has to be the HIGHER one. Against the mean, a cell whose '
+      + 'neighbour bed stands above its own free surface still trades water across the '
+      + 'face, and a lake at rest over an obstacle that pierces the surface flows',
+    expect: 'verify.mjs section 1, the lake-at-rest family, and inside it the island '
+      + 'that PIERCES the surface -- the configuration where max(bL, bR) and the mean '
+      + 'are furthest apart. verify-physics is declared as well because it is the 8 s '
+      + 'suite and it does go red; read the found note before crediting it with the '
+      + 'detection',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-physics.mjs, '
+      + 'where it was reported as caught ONLY by a 1.9e-19 rounding crumb',
+    found: '2026-08-14, measured on patched copies of the tree as it stood that afternoon '
+      + '(verify-physics 75 checks, verify.mjs 35, verify-tide 57 -- the first and last were '
+      + 'still growing that day, so read the live figures off the run). verify-physics goes '
+      + 'red 1/75 and the single line is "run-up 2D: no mass invented by flooring -- total '
+      + 'floored mass 1.8821735835809258e-19". That is a rounding crumb landing in an exact '
+      + 'comparison against a quantity that is identically zero on every unmutated case: '
+      + 'the suite is not measuring a broken datum, it is measuring that a number which '
+      + 'used to be 0.0 is now 1.9e-19, and it would go green again the day anyone gives '
+      + 'that assertion a sane tolerance. verify.mjs 2/35 is the detection that is about '
+      + 'the physics -- "lake at rest, island (pierces surface): surface, max |eta - 2| = '
+      + '0.022956 m over 400 steps" and "...velocity, max speed = 0.554322 m/s", a still '
+      + 'lake moving at half a metre a second. That is why both are declared: the 8 s suite '
+      + 'is a crumb and the 100 s one is the check. verify-tide is the interesting blind '
+      + 'one and is deliberately NOT declared, at a tenth of the cost verify.mjs already '
+      + 'covers it: ALL PASS 57/57 with 24 lines of its stdout moved and the headline '
+      + 'resonant gain going 2.784x -> 3.180x. It cannot see this because the fitted peak '
+      + 'moves from T/T_res = 1.02167 to 0.98403 -- CLOSER to 1 -- so a symmetric tolerance '
+      + 'about the right answer scores the broken solver BETTER than the correct one',
+    suites: ['verify-physics', 'verify'],
+    patches: [
+      {
+        file: 'src/swe.mjs',
+        find: L(
+          '        // hydrostatic reconstruction against the higher bed',
+          '        const bStar = Math.max(bL, bR);',
+        ),
+        repl: L(
+          '        // MUTANT: reconstruction datum is the MEAN bed, not the higher one (x sweep)',
+          '        const bStar = 0.5 * (bL + bR);',
+        ),
+      },
+      {
+        file: 'src/swe.mjs',
+        find: L(
+          '        const bStar = Math.max(bL, bR);',
+          '        const hsL = Math.max(0, etaL - bStar);',
+          '        const hsR = Math.max(0, etaR - bStar);',
+          '        // Same solver, axes swapped: pass v as the normal component and u as the',
+        ),
+        repl: L(
+          '        const bStar = 0.5 * (bL + bR);   // MUTANT: mean bed, not the higher one (y sweep)',
+          '        const hsL = Math.max(0, etaL - bStar);',
+          '        const hsR = Math.max(0, etaR - bStar);',
+          '        // Same solver, axes swapped: pass v as the normal component and u as the',
+        ),
+      },
+    ],
+  },
+  {
+    id: 'pos-overlimit',
+    name: 'positivity limiter over-limits by 2x',
+    breaks: 'the draw-down factor. theta is DEFINED as exactly the factor that empties '
+      + 'an over-drawing cell and no more; halving it stops the cell at half the water '
+      + 'it should have given away, so the front the limiter exists to keep positive is '
+      + 'instead held back, and the shoreline under-advances',
+    expect: 'verify-physics section 3, the deliberate over-draw rig -- the only place in '
+      + 'the repository where theta is ever below 1 at all',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-physics.mjs, '
+      + 'where it SURVIVED: the positivity assertion was one-sided, min(h + dt*rh) >= '
+      + '-1e-15, and over-limiting moves that quantity the SAFE way',
+    found: '2026-08-14: verify-physics 3/75, from checks written that same day. "positivity: '
+      + 'theta is the factor that JUST empties the cell, got 0.333333 want 0.666667"; '
+      + '"positivity: the over-drawing cell ends the stage at 0, got 0.250000 want 0 ... '
+      + 'measured exactly 2.500e-1 m"; "positivity: its neighbours hold everything it lost, '
+      + '0.125000 + 0.125000 m against 0.5 m released". Probed independently on the same '
+      + 'over-draw rig (40 cells of 0.5 m water diverging at 9 m/s, one residual at 5x the '
+      + 'CFL step): the same 38 of 40 cells clip either way, worst theta goes 6.6315e-1 -> '
+      + '3.3157e-1, and min(h + dt*rh) goes from exactly 0 to 2.5000e-1 m. What had been '
+      + 'missing was only ever the OTHER SIDE of an inequality -- positivity is a floor and '
+      + 'this defect is a ceiling. Everything else is still blind and correctly so: '
+      + 'verify.mjs 35/35, verify-tide 57/57 with its stdout BYTE-IDENTICAL to the '
+      + 'unmutated run (11797 characters), waves damping/fringingReef/snell all green, '
+      + 'because theta is 1 everywhere on every case any of them runs',
+    suites: ['verify-physics'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '          if (out * dt > avail) theta[k] = avail > 0 ? avail / (out * dt) : 0;',
+      repl: '          if (out * dt > avail) theta[k] = avail > 0 ? 0.5 * avail / (out * dt) : 0;   // MUTANT: over-limits',
+    }],
+  },
+  {
+    id: 'maxdt-max',
+    name: 'CFL: the two-axis sum becomes a max',
+    breaks: 'the 2D Courant condition. For a dimensionally-unsplit two-sweep scheme the '
+      + 'stable step is set by the SUM of the two directional wave rates, not by the '
+      + 'larger of them; taking the max asks for a step that would only be safe if the '
+      + 'y sweep cost nothing',
+    expect: 'verify-physics section 8, "the CFL step" -- the check that asserts the step '
+      + 'SIZE instead of the state at a fixed time. Nothing that only integrates to a '
+      + 'fixed t can see this, because the mutant reaches the same t in fewer, bigger '
+      + 'steps and on a smooth problem the answer survives it, so section 8 is not merely '
+      + 'the cheapest suite that catches it, it is the only check anywhere that does. '
+      + 'verify.mjs was declared here for one revision and is not any more: it is the '
+      + 'suite that calls sim.step() with no argument and therefore actually lets maxDt() '
+      + 'choose, so it looked like the right second opinion, and it was measured GREEN at '
+      + '35/35. A hundred seconds a run to print one more blind-spot line is not a trade '
+      + 'worth making when the note can say it instead',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit, which recorded it as '
+      + 'surviving BOTH suites while roughly doubling the timestep',
+    found: '2026-08-14, and this one CHANGED VERDICT inside the session, which is worth '
+      + 'recording rather than tidying away. Measured against the suites as they stood '
+      + 'that afternoon it was green everywhere: verify-physics 47/47, verify.mjs 35/35, '
+      + 'verify-tide 57/57 with 40 lines of its stdout moved -- it noticed and never said '
+      + 'so -- and waves damping 1/1, fringingReef 3/3, snell 4/4. It went into the '
+      + 'known-survivor block with the reason "nothing here asserts the step, only the '
+      + 'state at a fixed time; the fix is one line comparing maxDt() with the analytic '
+      + 'CFL step". verify-physics then grew that line, on an ANISOTROPIC grid so that the '
+      + 'sum and the max cannot coincide, and the mutant is now caught 2/75: "maxDt = '
+      + 'cfl/((|u|+c)/dx + (|v|+c)/dy), dx=7 dy=11 -- got 0.442166 want 0.282552, rel '
+      + '56.490%" and the same check with dx and dy exchanged, 71.686%. Probed separately '
+      + 'on a 200x60 flat-bed dam break, where dx = dy and u = v = 0 make the ratio exactly '
+      + '2: maxDt() at t = 0 goes 0.103705 s -> 0.207411 s and reaching t = 20 s takes 101 '
+      + 'steps instead of 193, both runs finite, volumes agreeing to 0.0000%. That last '
+      + 'part is why a fixed-time check could never have done it',
+    suites: ['verify-physics'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '        const s = (u + c) / dx + (v + c) / dy;',
+      repl: '        const s = Math.max((u + c) / dx, (v + c) / dy);   // MUTANT: 2D CFL sum -> max',
+    }],
+  },
+  {
+    id: 'flather-dirichlet',
+    name: 'Flather boundary reverts to Dirichlet',
+    breaks: 'the radiation boundary, completely. The ghost elevation becomes the '
+      + 'PRESCRIBED external one instead of the characteristic combination, so the open '
+      + 'boundary is a wall that oscillates and nothing leaves. This is not an invented '
+      + 'mutation: it is the defect this repository actually shipped, the one that '
+      + 'mirrored almost all of an outgoing wave',
+    expect: 'verify-tide section 3, the reflection coefficient against the solid-wall '
+      + 'control at every angle of incidence; and section 2, because a mouth that '
+      + 'mirrors cannot resonate at the right period',
+    review: 'not on the reviewer\'s list. Re-installed on purpose as a regression guard '
+      + 'for a bug that has been in this file\'s own history',
+    found: '2026-08-14: verify-tide 10/57 when first caught, 12/64 in the green run. The '
+      + 'headline is "Flather absorbs an outgoing long '
+      + 'wave -- reflection coefficient 49.14% at NORMAL incidence and A/h = 0.0033", '
+      + 'against 0.12% on the same line unmutated. With it go all four angle-of-incidence '
+      + 'ceilings (40.777 / 37.491 / 29.983 / 26.933% against 0.2 / 8 / 10 / 13%), the '
+      + 'monotonic-degradation check, both amplitude-sweep checks, and the resonance fit '
+      + '("got 1.05968 want 1.00000 ... peak gain 2.65x"). verify-physics is blind at 75/75 '
+      + 'and is deliberately NOT declared: it never builds an open boundary at all, so a '
+      + 'green line from it would be a suite reporting on something it does not run',
+    suites: ['verify-tide'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '    sim.h[g] = Math.max(0, en - bed);',
+      repl: '    sim.h[g] = Math.max(0, e0 - bed);   // MUTANT: prescribe the external elevation (Dirichlet)',
+    }],
+  },
+  {
+    id: 'resper-2L',
+    name: 'quarter-wave resonant period 4L -> 2L',
+    breaks: 'Tide.resonantPeriod(), the closed-form T = 4L/sqrt(gh) that src/tide.mjs '
+      + 'offers as "the Bay of Fundy in one formula", and with it every gain, detuning '
+      + 'and ranking resonanceReport() produces',
+    expect: 'verify-tide section 1e, which exercises resonanceReport() and therefore calls '
+      + 'the formula. NOT section 2: section 2 is the simulated resonance sweep and it '
+      + 'builds its own resonant period from the basin it is about to run, which is the '
+      + 'right way round for a simulation check and is exactly why it cannot see this. No '
+      + 'other suite imports src/tide.mjs, so no other suite could',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-tide.mjs, '
+      + 'where it was BYTE-IDENTICAL -- the export was never called',
+    found: '2026-08-14: verify-tide 4/57 when first caught, and 11/64 in the green run three '
+      + 'hours later as section 1e grew. The reason it is catchable at all is that the '
+      + 'suite now CALLS the formula instead of recomputing it inline. "idealGain is '
+      + '|sec(pi/2 Tr/T)|, recomputed here from the published period -- got 1.45942 want '
+      + '16.39726, rel 91.100%", plus the old-sort-key demonstration, the gain cap, and the '
+      + 'explicit gainCap argument. Measured against the 29-check version of the suite '
+      + 'earlier the same day this mutation was BYTE-IDENTICAL: 7301 characters of stdout, '
+      + 'character for character, cmp-clean. That is why it is worth keeping -- the failure '
+      + 'it guards against is not a wrong number, it is a published export that nothing '
+      + 'executes',
+    suites: ['verify-tide'],
+    patches: [{
+      file: 'src/tide.mjs',
+      find: '    return 4 * length / Math.sqrt(g * depth);',
+      repl: '    return 2 * length / Math.sqrt(g * depth);   // MUTANT: half-wave, not quarter-wave',
+    }],
+  },
+  {
+    id: 'n2k2-swap',
+    name: 'N2 and K2 periods swapped',
+    breaks: 'the constituent table. N2 (12.65834751 h) and K2 (11.96723606 h) exchange '
+      + 'periods, so a tide built from either is at the wrong frequency and the '
+      + 'lunar-elliptic and lunisolar beats against M2 swap places',
+    expect: 'verify-tide section 1, the constituent arithmetic -- the only place a '
+      + 'published period is compared with anything',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-tide.mjs, '
+      + 'where it was BYTE-IDENTICAL: the table was pinned only by band membership, '
+      + '"semidiurnal is between 11.5 and 13 hours", and both swapped values satisfy it',
+    found: '2026-08-14: verify-tide 4/57, still exactly 4 of 64 in the green run. Two are the '
+      + 'per-constituent period assertions, '
+      + 'each pinned to its Doodson number -- "N2 = 2 -3 2 1 on (T,s,h,p), got 11.96724 '
+      + 'want 12.65835, rel 5.460%" and "K2 = 2 0 2 0, got 12.65835 want 11.96723, rel '
+      + '5.775%" -- and two are the resonance-ranking demonstrations, which reorder when '
+      + 'the periods do. Against the 29-check version of the suite earlier the same day '
+      + 'this was BYTE-IDENTICAL (7301 characters, cmp-clean), because a SWAP keeps both '
+      + 'values inside the band that was the only thing pinning them',
+    suites: ['verify-tide'],
+    patches: [{
+      file: 'src/tide.mjs',
+      find: L(
+        "  N2: { period: 12.65834751, name: 'larger lunar elliptic semidiurnal' },",
+        "  K2: { period: 11.96723606, name: 'lunisolar semidiurnal' },",
+      ),
+      repl: L(
+        "  N2: { period: 11.96723606, name: 'larger lunar elliptic semidiurnal' },   // MUTANT: N2 and K2",
+        "  K2: { period: 12.65834751, name: 'lunisolar semidiurnal' },               // periods swapped",
+      ),
+    }],
+  },
+  {
+    id: 'k1-period-25',
+    name: 'K1 period 23.93447213 h -> 25.0 h',
+    breaks: 'the constituent table again, this time by putting in a number that is not '
+      + 'any constituent at all. 25.0 h against the published 23.93447213 is 4.452% high, '
+      + '1.06553 h per cycle; arithmetic on those two figures gives 14.958 h of '
+      + 'accumulated phase error over a fortnight, which is 0.625 of a K1 cycle -- i.e. '
+      + 'the diurnal inequality ends up on the wrong side of the day',
+    expect: 'verify-tide section 1. It is the sister of n2k2-swap and it is here as well '
+      + 'because the two fail differently: a swap keeps the set of published numbers '
+      + 'intact and only misfiles them, this one puts a number in that is not a '
+      + 'constituent at all',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-tide.mjs, '
+      + 'BYTE-IDENTICAL: the only assertion touching K1 was that a diurnal sits between '
+      + '23 and 27 hours, a band four hours wide',
+    found: '2026-08-14: verify-tide 1/57, still exactly 1 of 64 in the green run -- "K1 = 1 0 '
+      + '1 0 on (T,s,h,p), got 25.00000 want '
+      + '23.93447, rel 4.452%, 44518.6555 ppm". One line, and one is the honest number: '
+      + 'nothing else in the suite runs a diurnal constituent, so the period assertion is '
+      + 'the whole of the coverage, and the ppm column is what would make a transcription '
+      + 'slip in the eighth digit visible as well. BYTE-IDENTICAL against the 29-check '
+      + 'version earlier the same day',
+    suites: ['verify-tide'],
+    patches: [{
+      file: 'src/tide.mjs',
+      find: "  K1: { period: 23.93447213, name: 'lunisolar diurnal' },",
+      repl: "  K1: { period: 25.0, name: 'lunisolar diurnal' },   // MUTANT: 4.45% off the sidereal day",
+    }],
+  },
+  {
+    id: 'eta-phase-sign',
+    name: 'tidal phase enters eta() with the wrong sign',
+    breaks: 'the phase convention of the constituent sum: cos(wt - phi) becomes '
+      + 'cos(wt + phi), so every term with a non-zero phase arrives at the wrong time '
+      + 'relative to the others and the superposition is rebuilt from a different set '
+      + 'of relative phases. rate() is deliberately left alone, so eta() also stops '
+      + 'being the function rate() claims to differentiate',
+    expect: 'verify-tide section 4, the only place in the repository that runs a tide '
+      + 'with a NON-ZERO phase on a real constituent (S2 at 30 deg). Where every phase '
+      + 'is 0 the mutation is algebraically invisible, which is why nothing else can '
+      + 'see it however long it runs',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit of verify-tide.mjs: '
+      + 'ALL PASS 29/29 while it moved the range at the mouth from 6.53 m to 6.07 m',
+    found: '2026-08-14: verify-tide 4/57, still exactly 4 of 64 in the green run. Two of them '
+      + 'attack the convention head-on -- '
+      + '"phase +63 deg puts high water 63/360 of a cycle later, got -0.94046 want '
+      + '1.60000" and the cycle scan that then finds the maximum at 10.2470 h instead of '
+      + '2.1736 h. The other two catch the collateral damage, which is the part worth '
+      + 'noticing: this mutation leaves rate() alone, so eta() stops being the function '
+      + 'rate() differentiates, and "rate() matches a central difference of eta()" goes to '
+      + '29.053% of the largest rate in the cycle -- with a companion check that the '
+      + 'residual falls as d^2, which is what turns "close" into "actually the derivative". '
+      + 'Probed directly on the same constituent set, the worst |d(eta)/dt - rate(t)| over '
+      + '24 h goes 2.4989e-13 m/s shipped to 7.2722e-5 m/s mutated. Against the 29-check '
+      + 'version earlier the same day it was ALL PASS while moving the range at the mouth '
+      + '6.53 -> 6.07 m and the flood/ebb asymmetry 107.9% -> 104.9%: the first was printed '
+      + 'and not asserted, and the band that did cover the second was 10-152% wide',
+    suites: ['verify-tide'],
+    patches: [{
+      file: 'src/tide.mjs',
+      find: '    for (const k of this.terms) e += k.amp * Math.cos(k.omega * t - k.phase * Math.PI / 180);',
+      repl: '    for (const k of this.terms) e += k.amp * Math.cos(k.omega * t + k.phase * Math.PI / 180);   // MUTANT: phase sign',
+    }],
+  },
+
+  // =========================================================================
+  // PROMOTED OUT OF THE KNOWN-SURVIVOR BLOCK, 2026-08-14.
+  //
+  // Both of these were the reviewer's, both were declared uncatchable, and both
+  // were caught by checks that landed while this file was being edited. They
+  // are here rather than deleted because a mutation that has just started being
+  // caught is exactly the one worth re-running: it is the regression guard for
+  // a check written today.
+  //
+  // THE MECHANISM THAT FOUND THEM IS THE POINT. A known survivor is still run
+  // against its declared suite on every run, and being caught FAILS the run --
+  // "we cannot catch this" becoming false is good news and a stale sentence at
+  // the same time. That is what happened here: the run went red, the two lines
+  // below moved, and the file stopped lying. Note also that one of the two
+  // reasons was wrong about WHY it survived (see theta-left-only's found note),
+  // which is an argument for keeping the reason text short on mechanism and
+  // long on what was measured.
   // =========================================================================
   {
     id: 'einfeldt-davis',
@@ -697,10 +1054,18 @@ const MUTANTS = [
       + 'far apart, so it needs a strong dam break, and the strong dam-break checks '
       + 'have tolerances sized for the shock, not for the wave-speed estimate',
     review: 'SURVIVED all 93 checks at the review',
-    known: 'the shipped estimate is the one with the positivity guarantee; Davis '
-      + 'agrees with it wherever the states are close, which is everywhere except a '
-      + 'strong shock, and the strong-shock checks measure the shock position rather '
-      + 'than the fan. Catching it needs a check on the wave speeds themselves',
+    found: '2026-08-14. This was a KNOWN SURVIVOR of the reviewer\'s -- "SURVIVED all 93 '
+      + 'checks" -- and its reason read, in full, "the strong-shock checks measure the '
+      + 'shock position rather than the fan. Catching it needs a check on the wave '
+      + 'speeds themselves". verify-physics grew exactly that check and the mutant is '
+      + 'now caught 5 red: "hllc uses the declared two-rarefaction speeds, hL=10 hR=0.1 '
+      + '-- got 9.902853 want 21.529455, rel 54.003% (h* = 3.025000 m)", the same at '
+      + 'hL=10 hR=1 (6.931%) and hL=1 hR=0.9 (1.255%), plus "strong shock hL=10 hR=0.1: '
+      + 'sR bounds the exact right wave -- sR = 9.902853 against the exact shock '
+      + '12.331739 m/s, -19.7% over" and the weak-Riemann right speed at 1.256%. The '
+      + 'declaration was true when it was written and is not any more, and the only '
+      + 'reason anybody found out is that the harness re-runs a declared survivor '
+      + 'against its suite every time and exits non-zero when one is caught',
     suites: ['verify-physics'],
     patches: [{
       file: 'src/swe.mjs',
@@ -717,6 +1082,75 @@ const MUTANTS = [
       ),
     }],
   },
+  {
+    id: 'theta-left-only',
+    name: 'positivity limiter takes the left cell\'s theta',
+    breaks: 'which cell\'s draw-down factor scales a face. The shipped version picks '
+      + 'the UPWIND cell -- the one actually giving water away; the mutant always '
+      + 'takes the left one, so a face draining leftward is scaled by the receiving '
+      + 'cell instead',
+    expect: 'verify-physics section 3, the positivity checks and the mass audit at a '
+      + 'dry front, since that is the only place theta is ever below 1',
+    review: 'SURVIVED all 93 checks at the review',
+    found: '2026-08-14. Another of the reviewer\'s KNOWN SURVIVORS, caught the same '
+      + 'afternoon, and its reason turned out to be wrong about the fix. It said '
+      + '"catching it needs a check that counts clip events per side, not one that '
+      + 'counts water". No per-side counter was written. What caught it, 2 red, is the '
+      + 'two-sided end-state pair added for pos-overlimit: "positivity: the '
+      + 'over-drawing cell ends the stage at 0 -- got -0.125000 want 0" and "positivity: '
+      + 'its neighbours hold everything it lost -- 0.375000 + 0.250000 m against 0.5 m '
+      + 'released". Taking the left cell\'s theta on a face draining leftward does not '
+      + 'just mislabel which cell limited: it under-limits, and the cell ends the stage '
+      + 'at MINUS 0.125 m. The old reason was reasoning about the mechanism instead of '
+      + 'measuring the consequence, and the consequence was a negative depth in the one '
+      + 'rig built to look for one',
+    suites: ['verify-physics'],
+    patches: [
+      {
+        file: 'src/swe.mjs',
+        find: '        const th = fxM[kL] >= 0 ? theta[kL] : theta[kR];',
+        repl: '        const th = theta[kL];   // MUTANT: not upwinded (x sweep)',
+      },
+      {
+        file: 'src/swe.mjs',
+        find: '        const th = fyM[kL] >= 0 ? theta[kL] : theta[kR];',
+        repl: '        const th = theta[kL];   // MUTANT: not upwinded (y sweep)',
+      },
+    ],
+  },
+
+  // =========================================================================
+  // KNOWN SURVIVORS.
+  //
+  // Mutations that nothing in this repository catches. The count is not written
+  // here -- the run prints it. This block opened "Six mutations" for as long as
+  // there were six, and then two of the six were caught in an afternoon and the
+  // word was wrong; they are two entries up, under PROMOTED.
+  //
+  // Most of them are the reviewer's, found by a pass over the solver that this
+  // harness had not covered. They are declared rather than left out so that the
+  // gap is printed on every run instead of being invisible.
+  //
+  // WHAT THIS IS AND IS NOT. For the reviewer's, the reviewer could not make any
+  // of them change an answer on a closed-form benchmark either -- not Stoker,
+  // not Ritter, not Thacker -- so what is established is that they are
+  // indistinguishable from the shipped solver BY ANYTHING CURRENTLY MEASURED.
+  // That is a coverage gap. It is NOT a known correctness gap, and it is not
+  // evidence that the shipped choice is arbitrary: the HLLC contact estimate and
+  // the CFL number are cases where the shipped version is the one with the
+  // better guarantee and the alternative is merely not WORSE on anything
+  // measured so far.
+  //
+  // Each still declares a suite and is still run, because a declaration nobody
+  // re-measures is exactly the kind of stale claim this file exists to stop.
+  // They are declared against verify-physics, the cheapest suite, plus the
+  // cheap waves cases for the two whose effect is a wave effect. If one of them
+  // is ever CAUGHT the run FAILS -- being caught is good news, but it means the
+  // sentence "we cannot catch this" has become false and the list must be
+  // edited before it misleads someone. That has now happened twice, which is
+  // the strongest argument there is for keeping this block rather than deleting
+  // the entries in it.
+  // =========================================================================
   {
     id: 'sm-average',
     name: 'HLLC contact speed -> 0.5*(uL + uR)',
@@ -786,37 +1220,6 @@ const MUTANTS = [
     }],
   },
   {
-    id: 'theta-left-only',
-    name: 'positivity limiter takes the left cell\'s theta',
-    breaks: 'which cell\'s draw-down factor scales a face. The shipped version picks '
-      + 'the UPWIND cell -- the one actually giving water away; the mutant always '
-      + 'takes the left one, so a face draining leftward is scaled by the receiving '
-      + 'cell instead',
-    expect: 'verify-physics section 3, the positivity checks and the mass audit at a '
-      + 'dry front, since that is the only place theta is ever below 1',
-    review: 'SURVIVED all 93 checks at the review',
-    known: 'the same scale factor is still applied to BOTH sides of the face, so mass '
-      + 'is conserved exactly either way and the mass audit cannot see it. And theta '
-      + 'is 1 everywhere except at a cell that would over-draw inside one step -- on '
-      + 'these cases a handful of cells in the thin film of a front -- so the mutation '
-      + 'has almost nowhere to act, and where it does act the checks assert positivity '
-      + 'and mass rather than WHICH cell did the limiting. Catching it needs a check '
-      + 'that counts clip events per side, not one that counts water',
-    suites: ['verify-physics'],
-    patches: [
-      {
-        file: 'src/swe.mjs',
-        find: '        const th = fxM[kL] >= 0 ? theta[kL] : theta[kR];',
-        repl: '        const th = theta[kL];   // MUTANT: not upwinded (x sweep)',
-      },
-      {
-        file: 'src/swe.mjs',
-        find: '        const th = fyM[kL] >= 0 ? theta[kL] : theta[kR];',
-        repl: '        const th = theta[kL];   // MUTANT: not upwinded (y sweep)',
-      },
-    ],
-  },
-  {
     id: 'dryclean-silent',
     name: 'dryClean() stops reporting the mass it invents',
     breaks: 'the audit trail, not the physics. Flooring a negative depth to zero '
@@ -838,6 +1241,78 @@ const MUTANTS = [
       file: 'src/swe.mjs',
       find: '    return added;',
       repl: '    return 0;   // MUTANT: the floored mass is not reported',
+    }],
+  },
+
+  // -------------------------------------------------------------------------
+  // KNOWN SURVIVORS, second batch: what was left over from the 2026-08-14 suite
+  // audit after the checks written that day landed.
+  //
+  // This one is a different animal from the six above and the difference is the
+  // honest part. For the reviewer's six the summary is "nothing measured can
+  // tell them apart from the shipped code". Here the mutation demonstrably
+  // MOVES the solver -- the numbers below were measured this session, not
+  // inferred -- and it survives because nothing asserts the quantity it moves.
+  // That is the sharper kind of to-do, because there is a specific number to go
+  // and pin down and the check needed has no simulation in it.
+  //
+  // It started the day as a pair. maxdt-max, the other half, was a known
+  // survivor for about an hour: its reason said the missing check was "one line
+  // asserting maxDt() against the analytic CFL step on a state with a known
+  // celerity", tools/verify-physics.mjs grew exactly that check on an
+  // anisotropic grid, and it moved up into the caught list above. That is what
+  // this block is FOR -- a named, printed hole is a thing somebody can close,
+  // and this one was closed the same afternoon it was written down.
+  // -------------------------------------------------------------------------
+  {
+    id: 'hstar-half',
+    name: 'HLLC two-rarefaction estimate: (uL - uR)/4 -> /2',
+    breaks: 'the depth estimate h* that sizes the HLL fan. The 1/4 is the shallow-water '
+      + 'two-rarefaction solution; 1/2 is not the solution of anything, and it inflates '
+      + 'h* wherever the two states converge, which widens sL and sR through the shock '
+      + 'factors q_L and q_R',
+    expect: 'verify-physics section 6, the HLLC section, or any strong-shock check. The '
+      + 'estimate only reaches the wave speeds when h* > h, so it needs a converging '
+      + 'normal jump to show at all',
+    review: 'not on the reviewer\'s list. From the 2026-08-14 audit, which recorded it as '
+      + 'surviving both suites',
+    known: 'the estimate only reaches the wave speeds through the shock factors q_L, q_R, '
+      + 'and those are exactly 1 unless h* > h. Computed on four Riemann states: at hL = hR '
+      + '= 2 m CONVERGING at uL = +3, uR = -3 the estimate goes h* 3.5842 -> 5.6273 m and '
+      + 'the fan widens from sL, sR = -+4.0050 to -+7.2582 m/s, 81% wider; at hL = hR = 5 m '
+      + 'DIVERGING at -+1.2 it moves h* 4.1799 -> 3.4331 m and the speeds do not move at '
+      + 'all, because h* < h and q clamps; and at the two dam breaks (1 m against 0.001 m, '
+      + '10 m against 1 m) uL - uR is zero and the mutant IS the shipped estimate to the '
+      + 'last bit. So it acts only on a strongly converging normal jump, and when it acts '
+      + 'it WIDENS the fan -- the diffusive, positivity-safe direction -- which is why '
+      + 'nothing goes unstable and nothing goes red. AND THE OBVIOUS FIX HAS ALREADY BEEN '
+      + 'TRIED AND MISSES, which is the part worth knowing. verify-physics now carries '
+      + '"hllc uses the declared two-rarefaction speeds" -- the wave-speed check whose '
+      + 'absence let einfeldt-davis survive, and which caught einfeldt-davis the moment it '
+      + 'landed -- and it does not see this one at all. Its three Riemann states are '
+      + 'hL=10 hR=0.1, hL=10 hR=1 and hL=1 hR=0.9, and every one has uL = uR = 0, where '
+      + '(uL - uR)/4 and (uL - uR)/2 are both zero and the mutant IS the shipped formula '
+      + 'bit for bit (its printed h* values, 3.025000 / 4.331139 / 0.949342 m, are '
+      + 'identical either way). So the missing thing is no longer "a check on the wave '
+      + 'speeds", it is ONE MORE STATE in the check that already exists, with uL != uR: '
+      + 'hL = hR = 2 m at uL = +3, uR = -3 makes h* 3.5842 m shipped against 5.6273 m '
+      + 'mutated. That is a sharper to-do than the one this entry started with, and it is '
+      + 'sharper only because the near-miss was measured',
+    found: '2026-08-14, re-measured last thing against the tree as the other two passes left '
+      + 'it -- verify-physics at 75 checks, verify-tide at 64: verify-physics 75/75, '
+      + 'verify-tide 64/64 with 22 lines of its stdout moved, verify.mjs 35/35, and waves '
+      + 'damping 1/1, fringingReef 3/3, snell 4/4 (those three measured against the '
+      + 'earlier tree, but neither src/ nor tools/waves.mjs changed after it). All six '
+      + 'suites measured, which is what the known declaration rests on; only '
+      + 'verify-physics is re-run every time, being the suite whose section 6 is where a '
+      + 'check for this would have to go. The 22 moved lines are the important part of '
+      + 'that line: the suite is not blind because the mutation is inert, it is blind '
+      + 'because it prints what moved and asserts something else',
+    suites: ['verify-physics'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '    const hStar = ((cL + cR) / 2 + (uL - uR) / 4) ** 2 / G;',
+      repl: '    const hStar = ((cL + cR) / 2 + (uL - uR) / 2) ** 2 / G;   // MUTANT: not the two-rarefaction h*',
     }],
   },
 ];
@@ -1085,7 +1560,16 @@ async function main() {
     const i = argv.indexOf(name);
     return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt;
   };
-  const jobs = Number(arg('--jobs', 6));
+  // CONCURRENCY. This used to be a flat 6. It is sized from the machine now,
+  // because the number that decides the wall clock is how many of the SLOWEST
+  // suite can be in flight at once: this list declares several verify-tide
+  // runs, and verify-tide is 343.3 s measured alone on the 16-core machine this
+  // was changed on against 8.2 s for verify-physics. At six workers the
+  // verify-tide jobs need a second wave and the run costs an extra six minutes
+  // to learn nothing. Capped at 8 so a 64-core box does not start sixty node
+  // processes contending for memory bandwidth, floored at 2 so a small one
+  // still overlaps something. It is printed in the banner, and --jobs wins.
+  const jobs = Number(arg('--jobs', String(Math.min(8, Math.max(2, os.cpus().length - 2)))));
   const only = arg('--only', null);
   const keep = argv.includes('--keep');
 
@@ -1218,6 +1702,15 @@ async function main() {
     if (st.error) continue;
     for (const s of m.suites) phase1.push({ m, s, escalated: false });
   }
+  // LONGEST JOB FIRST. `pool` is FIFO, so the finishing time of the whole phase
+  // is decided by when its longest job STARTS -- and until this sort existed the
+  // order was the order the mutants happen to be written in. The baseline above
+  // has just measured every suite, so the harness knows the costs; sorting by
+  // them is free and it is the standard makespan heuristic. Measured 2026-08-14
+  // on the 16-core machine this was written on: verify-tide 343.3 s run alone,
+  // against verify-physics 8.2 s, so a single verify-tide job that starts last
+  // adds most of six minutes to the run for nothing.
+  phase1.sort((a, b) => (base[b.s]?.ms ?? 0) - (base[a.s]?.ms ?? 0));
   console.log(`\n  -- running ${phase1.length} suite runs (declared) ------------------------------\n`);
   await pool(phase1, jobs, async ({ m, s, escalated }) => {
     const st = state.get(m.id);
@@ -1247,6 +1740,10 @@ async function main() {
       console.log('\n  BASELINE IS NOT GREEN for an escalation suite; cannot interpret it.\n');
       return 2;
     }
+    // Same makespan sort as phase 1, and it matters more here: escalation is
+    // where the expensive suites pile up, because it runs every suite a mutant
+    // did NOT declare and the cheap ones are the ones already done.
+    phase2.sort((a, b) => (base[b.s]?.ms ?? 0) - (base[a.s]?.ms ?? 0));
     await pool(phase2, jobs, async ({ m, s, escalated }) => {
       const st = state.get(m.id);
       const r = await runSuite(st.dir, s, timeout[s]);
@@ -1330,13 +1827,16 @@ async function main() {
   if (knowns.length) {
     console.log('\n\n=== known survivors: mutations we cannot yet catch ====================\n');
     console.log('  Declared, run every time, and NOT counted as failures. Each line is a hole');
-    console.log('  in what this repository measures -- not a defect found in the solver. The');
-    console.log('  reviewer who found these could not make any of them change an answer on any');
-    console.log('  closed-form benchmark either, so what is established is that nothing here');
-    console.log('  can tell them apart from the shipped code, not that the shipped code is');
-    console.log('  wrong. They are not escalated: the "survives everything" half of the claim');
-    console.log('  is the reviewer\'s measurement, and re-proving it would cost most of ten');
-    console.log('  minutes a run. What is re-measured every time is the declared suites below.\n');
+    console.log('  in what this repository MEASURES -- not a defect found in the solver. None of');
+    console.log('  them is a known correctness gap. Beyond that they divide in two, and the');
+    console.log('  difference is in the reason text, which is worth reading rather than skipping:');
+    console.log('  for some, nothing measured anywhere can tell the mutation from the shipped');
+    console.log('  code at all; for others the mutation demonstrably MOVES the solver and');
+    console.log('  survives because no check asserts the quantity it moved. The second kind is');
+    console.log('  the sharper to-do, because there is a specific number to go and pin down.');
+    console.log('  They are not escalated: re-proving the "survives everything" half every run');
+    console.log('  would cost most of ten minutes. What is re-measured every run is the declared');
+    console.log('  suites below, which is what makes a stale declaration fail loudly.\n');
     console.log(`  ${'#'.padStart(2)}  ${pad('mutant', 22)} ${pad('ran against', 40)} still surviving?`);
     console.log(`  ${'--'}  ${'-'.repeat(22)} ${'-'.repeat(40)} ----------------`);
     knowns.forEach((m, i) => {
@@ -1353,6 +1853,50 @@ async function main() {
     });
     console.log('\n  why each one gets through -- read these as a to-do list for the suites:\n');
     for (const m of knowns) { console.log(`  [${m.id}]`); field('', m.known); }
+  }
+
+  // ---- COUNTS -------------------------------------------------------------
+  //
+  // The two tables above are the evidence. This is the one-line answer, and it
+  // exists because a reader who skims still has to be able to say what a green
+  // run MEANS. Every mutant lands in exactly one bucket and the buckets sum to
+  // the number run -- that sum is asserted below, because a summary that can
+  // quietly drop a row is a summary that can hide a survivor.
+  const nErrReal = realMutants.filter((m) => state.get(m.id).error).length;
+  const nErrKnown = knowns.filter((m) => state.get(m.id).error).length;
+  const nCaught = realMutants.length - survivors - nErrReal;
+  const nStillKnown = knowns.length - promoted - nErrKnown;
+  console.log('\n\n=== counts ===========================================================\n');
+  const row = (n, label, text) => console.log(`  ${String(n).padStart(3)}  ${pad(label, 17)}${text}`);
+  row(selected.length, 'MUTANTS RUN',
+    `against ${usedSuites.length} declared suite${usedSuites.length === 1 ? '' : 's'}, ${jobs} at a time`);
+  row(nCaught, 'caught', 'a shipped suite went RED, TIMEOUT or CRASH');
+  row(survivors, 'SURVIVED', 'every suite stayed green and it is NOT declared -- a hole');
+  row(nStillKnown, 'known survivor', 'declared uncatchable, re-run anyway, not a failure');
+  if (promoted) row(promoted, 'known -> CAUGHT', 'the declaration has gone stale and must be edited');
+  if (nErrReal + nErrKnown) {
+    row(nErrReal + nErrKnown, 'ANCHOR-ERROR', 'the patch never applied, so nothing was measured');
+  }
+  // The sum is checked, not assumed. It does NOT return here: an early return
+  // would skip the repo-integrity hash and leave the scratch tree behind, so
+  // the failure is recorded and the epilogue below still runs.
+  const bucketSum = nCaught + survivors + nStillKnown + promoted + nErrReal + nErrKnown;
+  const bucketsBroken = bucketSum !== selected.length;
+  if (bucketsBroken) {
+    console.log(`\n  FATAL: the buckets sum to ${bucketSum} but ${selected.length} mutant`
+      + `${selected.length === 1 ? ' was' : 's were'} run. A mutant has`);
+    console.log('  fallen out of the accounting, which is the one thing this block exists to');
+    console.log('  make impossible. Nothing else printed above can be trusted either.');
+  }
+  if (bucketsBroken || survivors || promoted || nErrReal + nErrKnown) {
+    console.log('\n  THIS RUN IS NOT GREEN, so it is making no claim yet. A SURVIVED row is a hole');
+    console.log('  in what this repository measures; a known-survivor that was CAUGHT is a sentence');
+    console.log('  in this file that has become false; an ANCHOR-ERROR row means that mutant was');
+    console.log('  never applied and nothing about it was measured at all.');
+  } else {
+    console.log(`\n  So this green run says: those ${nCaught} mutations CAN be caught by these suites as`);
+    console.log(`  they ship, those ${nStillKnown} cannot and are admitted rather than fixed, and it says`);
+    console.log('  nothing whatever about any mutation that is not on the list.');
   }
 
   // BLIND SPOTS. A mutant counts as CAUGHT if ANY suite noticed, which is the
@@ -1389,6 +1933,11 @@ async function main() {
   console.log(`  ${secs(Date.now() - wallStart)} wall clock: ${totalRuns} mutated suite runs `
     + `+ ${Object.keys(base).length} baselines, ${jobs} at a time`);
 
+  if (bucketsBroken) {
+    console.log('\n  FATAL: the counts block did not balance -- see above. Every other number in');
+    console.log('  this run is produced by the same bookkeeping, so none of them is evidence.\n');
+    return 3;
+  }
   if (hashAfter !== hashBefore) {
     console.log('\n  FATAL: src/ or tools/ changed while this ran. This harness never writes');
     console.log('  outside os.tmpdir(), so either that guarantee broke or something else was');

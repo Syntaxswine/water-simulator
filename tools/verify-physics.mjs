@@ -18,7 +18,14 @@
 // -- to prove a check can go red, and to place a threshold between working and
 // broken -- it says so at the point of use.
 //
-//   node tools/verify-physics.mjs        (~8 s)
+//   node tools/verify-physics.mjs        (9-12 s; see below)
+//
+// RUNTIME, measured 2026-08-14 as four interleaved pairs against the 43-check
+// version this grew out of: 8144, 8599, 11322, 8317 ms then, 10964, 11770,
+// 11129, 10574 ms now. The spread on this machine is wider than the difference
+// is interesting, so the honest figure is the minimum of the pairs, 8.1 s
+// against 10.6 s -- sections 7 and 10 cost about two and a half seconds
+// between them, nearly all of it the two seiche and channel runs.
 //
 // G IS A LITERAL HERE, AND THAT IS THE POINT. tools/verify.mjs imports G from
 // the module it is testing, so its analytic targets are written in terms of
@@ -29,9 +36,21 @@
 // identities by exactly 10%, which is the scaling itself, because the friction
 // coefficient is linear in g. Section 1's inertial period stays green, which is
 // also right: an inertial oscillation does not involve gravity at all.
+//
+// All five of those are FRICTION checks, though, and that is a hole rather than
+// a result: gravity also sets the pressure flux, the wave speeds and the CFL
+// step, and a scratch copy with 1.23*G in all of those and the honest constant
+// in applyFriction() passes this file 43/43. Section 7 was added for that, and
+// measures g from the period of a standing wave instead of reading it.
+//
+// SECTIONS 7-10 WERE ADDED 2026-08-14 after a mutation audit found five holes:
+// a one-sided positivity check (3c), gravity read rather than measured (7), an
+// unpinned CFL step (8), an unpinned HLL wave-speed estimate (9), and no
+// coverage at all of outflow() or makeSponge() (10). They are appended rather
+// than slotted in among 1-6 so that the older sections keep their numbers.
 // ---------------------------------------------------------------------------
 
-import { ShallowWater, reflect, periodic } from '../src/swe.mjs';
+import { ShallowWater, hllc, reflect, periodic, outflow, makeSponge } from '../src/swe.mjs';
 
 const G = 9.80665;                 // standard gravity [m/s^2] -- NOT imported.
 
@@ -328,8 +347,8 @@ console.log('\n=== 3. wetting and drying: mass =================================
 // the front to first order, and a first-order upwind flux inside the CFL
 // condition simply cannot over-draw a cell.
 //
-// That makes the limiter unreachable from any run-based test, so part (c) tests
-// it directly instead, with a step the solver would never take.
+// That makes the limiter unreachable from any run-based test, so parts (c) and
+// (d) test it directly instead, with a step the solver would never take.
 //
 // STEP BUDGETS. Every loop here is capped at a step count derived from the
 // analytic maximum speed, and the cap is asserted. This is a hang guard, not a
@@ -473,6 +492,92 @@ console.log('\n=== 3. wetting and drying: mass =================================
       `${clipped} of ${nx} cells clipped, worst theta ${fmt(minTheta)} at dt = ${fmt(dt)} s (5x the CFL step)`);
     assert('positivity: no cell ends the stage with negative depth', minH >= -1e-15,
       `min(h + dt*rh) = ${minH === 0 ? '0' : minH.toExponential(3)} m`);
+  }
+
+  // -----------------------------------------------------------------------
+  // (d) AND TIGHT, NOT MERELY SAFE.
+  //
+  // Everything in (c) is ONE-SIDED. It asserts that no cell ends the stage
+  // below zero, which catches a limiter that lets too much water out and
+  // cannot, even in principle, catch one that lets too little. Measured
+  // 2026-08-14 on a scratch copy with theta halved -- `0.5 * avail / (out*dt)`,
+  // so a cell that should drain to exactly zero keeps a quarter metre of water:
+  //
+  //   PASS  positivity: the limiter was actually needed here
+  //         38 of 40 cells clipped, worst theta 0.331573 ...
+  //   PASS  positivity: no cell ends the stage with negative depth
+  //         min(h + dt*rh) = 2.500e-1 m
+  //   ALL PASS -- 43/43 checks
+  //
+  // Both guards stay green and so does the whole file. On a beach that mutation
+  // is a limiter silently damping drainage and run-up, which is the failure
+  // this solver can least afford.
+  //
+  // This part also catches `theta-left-only`, which tools/mutants.mjs lists as
+  // a known survivor: measured against that file's own patch, the draining cell
+  // ends the stage at -1.250e-1 m and its neighbours hold 0.625 m of the 0.5 m
+  // it released, 2 FAILURES and 73/75. That table needs editing too, and again
+  // not from here.
+  //
+  // (c)'s rig cannot be made two-sided as it stands. 38 of its 40 cells are
+  // draining and being refilled at the same time, so their stage-end depth is
+  // whatever flowed IN, not zero, and nothing outside the solver can separate
+  // the two. So build a cell with no inflow at all: ONE wet cell in a dry row.
+  // The neighbours are dry and have nothing to give it, it drains out of both
+  // faces, and the answer is then exact -- at a step big enough to over-draw
+  // it, it must end the stage at EXACTLY zero, and its two neighbours must hold
+  // exactly what it started with.
+  //
+  // The scale factor is exact too, and this is the part that pins tightness
+  // rather than inferring it. Against a dry neighbour hllc() takes its dry
+  // branch, sL = uL - cL and sR = uL + 2cL; with uL = 0 and F(W_dry) = 0 the
+  // HLL mass flux collapses to
+  //     F = sL sR (hR - hL)/(sR - sL) = 2 c h0 / 3
+  // so the cell's outgoing budget is out = 2F/dx, and the factor that just
+  // empties it is theta = h0/(out dt) = 3 dx/(4 c dt) -- at dt = 5 dtCFL with
+  // dy = dx that is 3/(10 cfl) = 2/3, and the solver returns 0.66666666666666674
+  // against 0.66666666666666663 predicted, one ulp. THAT IS THE SCHEME'S FLUX AT
+  // A WET/DRY FACE, derived here from the published HLL formula and the exact
+  // Ritter speeds; it is not a claim about a real dam break, and the difference
+  // matters: the exact Ritter flux at the same face is 8 c h0/27, measured here
+  // as 0.328051152 against the scheme's 0.738115092, 2.25 times smaller. HLL is
+  // that diffusive at a dry front, which is why the limiter exists at all.
+  //
+  // MASS CONSERVATION CANNOT STAND IN FOR ANY OF THIS. Under the halving
+  // mutation the whole row still sums to 0.50000000000000000 m, bit for bit,
+  // because both sides of a face are scaled by the same factor whatever that
+  // factor is -- which is why the third check below is written against what the
+  // two neighbours HOLD (0.25 each, and 0.125 each under the mutation) and not
+  // against the total.
+  {
+    const nx = 9, dx = 2, h0 = 0.5, MULT = 5, ic = 4;
+    const sim = new ShallowWater({ nx, ny: 1, dx, bed: () => 0, eta0: 0, manning: 0 });
+    sim.boundaries = { west: reflect, east: reflect, south: reflect, north: reflect };
+    const kc = sim.idx(ic, 0);
+    sim.h[kc] = h0;                                 // one wet cell, dry row
+    const dt = MULT * sim.maxDt();
+    const c = Math.sqrt(G * h0);
+    const thetaWant = 3 * dx / (4 * c * dt);
+    sim.applyBC();
+    sim.residual(dt);
+    const end = (i) => { const k = sim.idx(i, 0); return sim.h[k] + dt * sim.rh[k]; };
+    let untouched = 0;
+    for (let i = 0; i < nx; i++) {
+      if (i !== ic && sim.theta[sim.idx(i, 0)] === 1) untouched++;
+    }
+    // 1 ulp is 2.2e-16 and that is what this measures; 1e-12 is four orders of
+    // room, and still twelve orders under the smallest scaling error worth the
+    // name (the halving above reads -50.000%).
+    check('positivity: theta is the factor that JUST empties the cell',
+      sim.theta[kc], thetaWant, 1e-12,
+      `dt = ${fmt(dt)} s (${MULT}x CFL); analytic 3dx/(4 c dt) from the HLL dry-face flux 2 c h0/3 = ${fmt(2 * c * h0 / 3)} m^2/s`);
+    check('positivity: the over-drawing cell ends the stage at 0', end(ic), 0, 1e-15,
+      `measured exactly ${end(ic) === 0 ? '0' : end(ic).toExponential(3)} m; the same rig with theta halved leaves 2.500e-1 m`);
+    check('positivity: its neighbours hold everything it lost', end(ic - 1) + end(ic + 1), h0, 1e-15,
+      `${fmt(end(ic - 1))} + ${fmt(end(ic + 1))} m against ${h0} m released`);
+    assert('positivity: a cell that gives nothing away is not limited',
+      untouched === nx - 1,
+      `${untouched} of ${nx - 1} untouched cells still have theta = 1 exactly -- a limiter that scales everything a little is caught here`);
   }
 }
 
@@ -734,10 +839,35 @@ console.log('\n=== 6. the HLLC contact wave ====================================
     // 12 with the HLLC contact, 20 with an HLL transverse flux
     // (out[2] = (sR*FLs[2] - sL*FRs[2] + sL*sR*(hvR - hvL))/(sR - sL)) pasted
     // into hllc() on a scratch copy. 16 sits between them.
+    //
+    // BOTH OF THESE THRESHOLDS SIT MID-BAND AND THE BAND IS NARROW, so it is
+    // worth saying whether that is defensible. Re-measured 2026-08-14, both
+    // fluxes, same rig, varying only the number of traversals:
+    //
+    //   laps   steps    HLLC L1   HLL L1   ratio    HLLC cells   HLL cells
+    //     1     3305   0.066138  0.095050  1.437        12          20
+    //     2     6609   0.081890  0.113552  1.387        16          22
+    //     3     9914   0.093124  0.126082  1.354        18          24
+    //     4    13218   0.102163  0.135852  1.330        18          26
+    //     6    19827   0.116614  0.151015  1.295        22          30
+    //
+    // So the margin cannot be bought with a longer run: running further makes
+    // the separation WORSE, because HLLC's transverse diffusion is going with
+    // the contact speed the whole way while HLL's head start is fixed. One lap
+    // is the best-separated member of the family, and inside it the thresholds
+    // are already about as well placed as they can be -- 0.08 against a band of
+    // 0.066138 to 0.095050 (the geometric middle is 0.0793), and 16 against 12
+    // and 20. The margins are 21% and 25% of the band, they are DETERMINISTIC
+    // (no RNG anywhere in this case, and both numbers reproduce bit for bit
+    // between runs), so this is a hard margin and not a flaky one. What it does
+    // mean is that a future change to the reconstruction which costs the
+    // shipped scheme a fifth of its remaining sharpness will turn these red
+    // without HLLC having been touched; the fix then is to re-measure the band
+    // and re-place the threshold, not to widen it.
     assert('contact stays sharp: transition width', smeared < 16,
       `${smeared} of ${N} cells inside the transitions; HLL-like smearing measures 20`);
     check('contact: L1 against the exact translated profile', l1 / N, 0, 0.08,
-      `HLL measures 0.095 on the same run`);
+      `HLL measures 0.095050 on the same run, so the discriminating band is 0.066 to 0.095`);
   }
 
   // (b) y-sweep, a sine: does the AMPLITUDE survive? This is the half of the
@@ -784,6 +914,510 @@ console.log('\n=== 6. the HLLC contact wave ====================================
     // discriminator between flux functions: HLL gets the phase right too.
     check('contact: transverse phase error', phase, 0, 0.02,
       `${fmt(phase)} rad after one traversal`);
+  }
+}
+
+// ===========================================================================
+console.log('\n=== 7. gravity, measured from the water rather than read off it ====\n');
+// ===========================================================================
+//
+// Comparing the solver's EXPORTED gravity against a reference constant closes
+// exactly one hole -- somebody typing 9.81 -- and cannot see a solver that
+// exports 9.80665 and integrates with something else.
+//
+// Gravity enters this solver in four places: the hydrostatic pressure flux
+// 0.5 g h^2, the HLL wave-speed estimates, maxDt()'s celerity, and the Manning
+// coefficient. Only the LAST of those is pinned by anything above, and it is
+// pinned hard -- section 2(b) is linear in g and holds to 1e-10, so a wrong
+// gravity in applyFriction() is caught by ten orders of magnitude.
+//
+// Measured 2026-08-14 on a scratch copy, `export const G` left at 9.80665 and
+// every INTERNAL use of the identifier replaced by 1.23*G:
+//
+//   internal gravity 23% high, everywhere       38/43   (the three Manning
+//                                                        normal depths and both
+//                                                        spin-down identities)
+//   ...with applyFriction() alone reverted      43/43
+//
+// The second line is the hole: 23% wrong in the pressure flux, the wave speeds
+// and the CFL step, and not one check in this file noticed.
+//
+// So measure gravity from what the water does with it. A closed flat basin
+// rings in its fundamental mode at the Merian period T = 2L/sqrt(g h), which
+// inverts to g = (2L/T)^2/h. The period is read off the zero crossings of the
+// elevation at the west wall: no amplitude calibration, no fit, and unaffected
+// by the slow numerical decay of the mode.
+//
+// TOLERANCE, AND IT IS A DISCRETISATION-LIMITED PLAUSIBILITY BOUND, not a
+// figure from a book. Measured on this rig (L = 2000 m, h = 10 m, A = 1 mm,
+// 3 periods) at three resolutions:
+//
+//   dx = 20 m    g = 9.808461367    +0.018471%
+//   dx = 10 m    g = 9.807149595    +0.005094%   <- shipped
+//   dx =  5 m    g = 9.806821757    +0.001751%
+//
+// The error falls by 3.6x and then 2.9x as dx halves, i.e. roughly second
+// order and short of it in the way a limited scheme usually is, which is what
+// says the residue is the mesh and not the solver. Amplitude matters too, and
+// less: A = 1e-2 m reads +0.010915% (finite-amplitude steepening) and
+// A = 1e-4 m reads +0.004514%, so of the shipped 0.005094% about 0.00058
+// percentage points -- a ninth of it -- is nonlinearity and the rest is dx.
+// The tolerance is 5e-4, ten times the shipped error and 460 times under the
+// mutation above.
+//
+// Against that mutation the instrument does not merely go red, it reads the
+// injected error back: g = 12.062715, +23.005% against an injected 23%.
+{
+  const L = 2000, h0 = 10, nx = 200, A = 1e-3, PERIODS = 3;
+  const T1 = 2 * L / Math.sqrt(G * h0);            // Merian, fundamental mode
+  const sim = new ShallowWater({
+    nx, ny: 1, dx: L / nx, bed: () => -h0, manning: 0,
+    eta0: (x) => A * Math.cos(Math.PI * x / L),    // the exact mode shape
+  });
+  sim.boundaries = { west: reflect, east: reflect, south: reflect, north: reflect };
+  const dt = 0.9 * sim.maxDt();
+  const k0 = sim.idx(0, 0);
+  const eta = () => sim.b[k0] + sim.h[k0];
+
+  let prev = eta(), prevT = sim.t, steps = 0;
+  const cross = [];
+  while (sim.t < PERIODS * T1) {
+    sim.step(dt);
+    steps++;
+    const e = eta();
+    // Linear interpolation between the two samples that straddle zero. The
+    // elevation is smooth on the scale of dt (one period is ~1975 steps).
+    if ((prev > 0 && e <= 0) || (prev < 0 && e >= 0)) cross.push(prevT + dt * prev / (prev - e));
+    prev = e; prevT = sim.t;
+  }
+  assert('gravity: the basin rang at all', cross.length >= 4,
+    `${cross.length} zero crossings at the west wall in ${steps} steps (measured 6: two per period, ${PERIODS} periods)`);
+
+  const T = 2 * (cross[cross.length - 1] - cross[0]) / (cross.length - 1);
+  const gMeas = (2 * L / T) ** 2 / h0;
+  check('gravity recovered from the long-wave period', gMeas, G, 5e-4,
+    `T = ${fmt(T)} s against 2L/sqrt(gh) = ${fmt(T1)} s, so g = ${fmt(gMeas)} m/s^2 against the literal ${G}`);
+}
+
+// ===========================================================================
+console.log('\n=== 8. the CFL step ================================================\n');
+// ===========================================================================
+//
+// Section 1 asserts `dt < sim.maxDt()`, which is one-sided: it can catch a
+// limit that has grown too SMALL and can never catch one that has grown too
+// large. Changing the 2D wave-speed combination from a sum to a max -- the
+// classic way to get this wrong, and worth roughly a factor of two in the step
+// -- passes everything. Measured 2026-08-14 on a scratch copy: 43/43, with the
+// section 3 dam break finishing in 389 steps instead of 580 and the section 6
+// contact run in 1746 instead of 3305. Both still look like healthy runs.
+//
+// So pin the limit itself against the analytic Courant condition, on a state
+// built here with BOTH velocity components non-zero and dx != dy, which is what
+// makes the sum and the max distinguishable at all.
+//
+// THE COURANT NUMBER IS READ OFF THE OBJECT rather than written as a literal,
+// deliberately. This check is about the FORMULA. Whether 0.45 is the right
+// number is a stability-margin question, it is answered by running the solver
+// rather than by reading it, and tools/mutants.mjs carries `cfl-0.9` as a known
+// survivor for exactly that reason; this section does not change that.
+{
+  for (const [dx, dy] of [[7, 11], [11, 7]]) {
+    const h0 = 3, u0 = 1.7, v0 = -0.9;
+    const sim = new ShallowWater({ nx: 6, ny: 5, dx, dy, bed: () => -h0, eta0: 0, manning: 0 });
+    uniform(sim, h0, u0, v0);
+    const c = Math.sqrt(G * h0);
+    const sum = (Math.abs(u0) + c) / dx + (Math.abs(v0) + c) / dy;
+    const mx = Math.max((Math.abs(u0) + c) / dx, (Math.abs(v0) + c) / dy);
+    // Measured: bit for bit, rel 0.00e+0, in both orientations. The tolerance
+    // is 1e-14 rather than 0 because vel() reaches u0 through a square root
+    // (section 4a measures that at 2.8e-16 worst case), so exactness here is
+    // measured and not guaranteed. The mutation it is placed against is 56.5%
+    // (dx=7) and 71.7% (dx=11) away.
+    check(`maxDt = cfl/((|u|+c)/dx + (|v|+c)/dy), dx=${dx} dy=${dy}`,
+      sim.maxDt(), sim.cfl / sum, 1e-14,
+      `cfl ${sim.cfl}; the same state with the two directions MAXed instead of summed gives ${fmt(sim.cfl / mx)} s, ${fmt(sum / mx)}x larger`);
+  }
+
+  // Dry cells do not set the step -- "over wet cells only", as the method says.
+  // A puddle below minDepth carrying momentum would otherwise seize the whole
+  // grid's timestep. It cannot arise in a real run, because dryClean() zeroes
+  // the momentum of every such cell before the next step reads it; this asserts
+  // the contract rather than a run, and it is measured against what maxDt()
+  // WOULD return if the cell counted, printed beside it.
+  {
+    const h0 = 3, u0 = 1.7, v0 = -0.9, dx = 7, dy = 11;
+    const sim = new ShallowWater({ nx: 6, ny: 5, dx, dy, bed: () => -h0, eta0: 0, manning: 0 });
+    uniform(sim, h0, u0, v0);
+    const dt0 = sim.maxDt();
+    const k = sim.idx(2, 2), hd = 0.9 * sim.minDepth;
+    sim.h[k] = hd; sim.hu[k] = hd * 100; sim.hv[k] = 0;
+    const ud = sim.vel(sim.hu[k], hd), cd = Math.sqrt(G * hd);
+    assert('maxDt: a cell at or below minDepth does not set the step',
+      sim.maxDt() === dt0,
+      `one cell at h = ${fmt(hd)} m moving ${fmt(ud)} m/s; the step stays ${fmt(dt0)} s, where counting it would give ${fmt(sim.cfl / ((ud + cd) / dx + cd / dy))} s`);
+  }
+}
+
+// ===========================================================================
+console.log('\n=== 9. the HLL wave-speed estimate =================================\n');
+// ===========================================================================
+//
+// sL and sR decide how much diffusion the Riemann solver adds and whether it
+// can go negative at a strong shock, and NOTHING measured them. Measured
+// 2026-08-14 on scratch copies: multiplying the two-rarefaction h* estimate by
+// 1.2 passes 43/43, and so does replacing the whole estimate with plain Davis
+// speeds (min/max of u -+ c), which is tools/mutants.mjs's declared known
+// survivor `einfeldt-davis`.
+//
+// HOW THE SPEEDS ARE READ OUT. hllc() does not return them, but it branches on
+// them: `if (sL >= 0) return F(W_L)`. The estimate is Galilean-invariant, so
+// shifting both states by a uniform velocity s shifts sL and sR by exactly s,
+// and the shift at which the function switches to its early return is -sL. The
+// switch is detected by out[0] === hu_L, which is a BIT comparison against the
+// argument flux1D copies verbatim, not a tolerance on two computed numbers, and
+// bisection then locates the edge to ~1e-16. Recovered this way the left speed
+// comes back as uL - cL to 2.2e-16 relative, which is the right answer for
+// these cases and a good check on the method itself.
+//
+// WHAT IT IS COMPARED AGAINST is the exact Riemann solution of the same two
+// states, iterated below and self-checked against the Rankine-Hugoniot
+// conditions and the u + 2c invariant before anything is compared to it.
+//
+// A NEGATIVE RESULT, recorded so nobody spends the afternoon twice: DO NOT
+// COMPARE THE FLUX. The obvious test -- HLLC's flux at x/t = 0 against the
+// exact flux -- ranks the mutants BACKWARDS. Measured on the 100:1 dam break
+// below, mass-flux error against the exact solution: shipped +128.9%, Davis
+// +67.1%, h* 20% high +141.4%. Davis scores BEST, because a fan that is too
+// narrow is less diffusive -- and it is also the one that fails to enclose the
+// true fan in (c) below, which is the condition the positivity guarantee rests
+// on. A flux comparison measures diffusion; the question here is about
+// bounding; so the check has to be on the speeds.
+//
+// THIS SECTION CATCHES `einfeldt-davis`, which tools/mutants.mjs lists as a
+// known survivor. Measured 2026-08-14 against that file's own patch: 5
+// FAILURES, 70/75. Its known-survivor table has to be edited before it
+// misleads the next reader -- that is a change to tools/mutants.mjs and it is
+// not made here.
+{
+  const vL = 0.3, vR = -0.7;         // transverse; the wave speeds ignore them
+
+  // The exact solution. h* solves f(h,hL) + f(h,hR) + (uR - uL) = 0 with
+  //   f(h,hK) = 2(sqrt(g h) - sqrt(g hK))              h <= hK   rarefaction
+  //           = (h - hK) sqrt(g (h + hK)/(2 h hK))     h >  hK   shock
+  // which is monotone increasing in h, so bisection cannot miss the root.
+  const exact = (hL, uL, hR, uR) => {
+    const cL = Math.sqrt(G * hL), cR = Math.sqrt(G * hR);
+    const f = (h, hK) => (h <= hK
+      ? 2 * (Math.sqrt(G * h) - Math.sqrt(G * hK))
+      : (h - hK) * Math.sqrt(0.5 * G * (h + hK) / (h * hK)));
+    const F = (h) => f(h, hL) + f(h, hR) + (uR - uL);
+    let lo = 1e-12, hi = Math.max(hL, hR);
+    while (F(hi) < 0) hi *= 2;
+    for (let n = 0; n < 200; n++) { const m = 0.5 * (lo + hi); if (F(m) > 0) hi = m; else lo = m; }
+    const hs = 0.5 * (lo + hi);
+    const us = 0.5 * (uL + uR) + 0.5 * (f(hs, hR) - f(hs, hL));
+    return {
+      hs, us, cs: Math.sqrt(G * hs),
+      SL: hs > hL ? uL - cL * Math.sqrt(0.5 * (hs + hL) * hs / (hL * hL)) : uL - cL,
+      SR: hs > hR ? uR + cR * Math.sqrt(0.5 * (hs + hR) * hs / (hR * hR)) : uR + cR,
+    };
+  };
+
+  // The shipped estimate, transcribed from the source with the LITERAL G.
+  const estimate = (hL, uL, hR, uR) => {
+    const cL = Math.sqrt(G * hL), cR = Math.sqrt(G * hR);
+    const hStar = ((cL + cR) / 2 + (uL - uR) / 4) ** 2 / G;
+    const qL = hStar > hL ? Math.sqrt(0.5 * (hStar + hL) * hStar / (hL * hL)) : 1;
+    const qR = hStar > hR ? Math.sqrt(0.5 * (hStar + hR) * hStar / (hR * hR)) : 1;
+    return { hStar, sL: uL - cL * qL, sR: uR + cR * qR };
+  };
+
+  const out = [0, 0, 0];
+  const recover = (hL, uL, hR, uR) => {
+    const leftOnly = (s) => {
+      hllc(out, hL, hL * (uL + s), hL * vL, hR, hR * (uR + s), hR * vR, 1e-4);
+      return out[0] === hL * (uL + s);
+    };
+    const rightOnly = (s) => {
+      hllc(out, hL, hL * (uL - s), hL * vL, hR, hR * (uR - s), hR * vR, 1e-4);
+      return out[0] === hR * (uR - s);
+    };
+    const edge = (pred) => {
+      let lo = 0, hi = 1;
+      while (!pred(hi)) { hi *= 2; if (hi > 1e9) return NaN; }
+      for (let n = 0; n < 100; n++) { const m = 0.5 * (lo + hi); if (pred(m)) hi = m; else lo = m; }
+      return 0.5 * (lo + hi);
+    };
+    return { sL: -edge(leftOnly), sR: edge(rightOnly) };
+  };
+
+  // Three Riemann problems, all of them a left rarefaction and a right shock,
+  // which is asserted below rather than assumed because the self-checks that
+  // follow are written for that structure.
+  const CASES = [[10, 0, 0.1, 0], [10, 0, 1, 0], [1, 0, 0.9, 0]];
+
+  // (a) THE EXACT SOLVER, SELF-CHECKED. The Rankine-Hugoniot conditions and the
+  // Riemann invariant are not what the f-function above solves, so an error in
+  // it -- a factor of two in the shock branch, say -- shows up here rather than
+  // silently moving the target. Measured, all six residuals are at roundoff:
+  // worst 3.87e-16 relative. Measured with the 0.5 dropped from the shock branch
+  // of f, the three Rankine-Hugoniot residuals read 3.917%, 17.298% and 8.416%.
+  for (const [hL, uL, hR, uR] of CASES) {
+    const e = exact(hL, uL, hR, uR);
+    const cL = Math.sqrt(G * hL);
+    const tag = `hL=${hL} hR=${hR}`;
+    assert(`exact solver: ${tag} is a left rarefaction over a right shock`,
+      e.hs < hL && e.hs > hR, `h* = ${fmt(e.hs)} m between hR = ${hR} and hL = ${hL}`);
+    // Shock speed from the MASS jump, then the momentum jump as the residual.
+    const S = (e.hs * e.us - hR * uR) / (e.hs - hR);
+    const mom = (e.hs * e.us * e.us + 0.5 * G * e.hs ** 2) - (hR * uR * uR + 0.5 * G * hR ** 2)
+      - S * (e.hs * e.us - hR * uR);
+    check(`exact solver: Rankine-Hugoniot residual, ${tag}`,
+      mom / (e.hs * e.us * e.us + 0.5 * G * e.hs ** 2), 0, 1e-13,
+      `shock speed ${fmt(S)} m/s from the mass jump, momentum jump as the residual`);
+    check(`exact solver: u + 2c across the rarefaction, ${tag}`,
+      ((uL + 2 * cL) - (e.us + 2 * e.cs)) / (uL + 2 * cL), 0, 1e-13,
+      `${fmt(uL + 2 * cL)} against ${fmt(e.us + 2 * e.cs)} m/s`);
+  }
+
+  // (b) A WEAK JUMP. Every consistent estimate has to converge to the exact
+  // characteristics as the jump vanishes; the question is how fast. At 10% in
+  // depth the shipped estimate is already at the exact speeds to 0.001%, while
+  // Davis is 1.256% out on the right-going wave (measured, same rig) because it
+  // takes uL + cL and never sees the shock at all. TOLERANCE 5e-4: fifty times
+  // the shipped error, twenty-five times under Davis, and it also catches an
+  // h* estimate 1% high, which reads 0.757% -- measured, as is the 3.777% an h*
+  // 5% high reads here, which (d) below lets through at 13.290%.
+  {
+    const [hL, uL, hR, uR] = CASES[2];
+    const e = exact(hL, uL, hR, uR), r = recover(hL, uL, hR, uR);
+    check(`weak Riemann problem hL=${hL} hR=${hR}: left speed vs exact`, r.sL, e.SL, 5e-4,
+      `${fmt(r.sL)} against the exact rarefaction head ${fmt(e.SL)} m/s`);
+    check(`weak Riemann problem hL=${hL} hR=${hR}: right speed vs exact`, r.sR, e.SR, 5e-4,
+      `${fmt(r.sR)} against the exact shock speed ${fmt(e.SR)} m/s`);
+  }
+
+  // (c) A STRONG SHOCK, 100:1. Here the estimates genuinely differ, and the
+  // property that matters is not accuracy but BOUNDING: the fan handed to the
+  // HLL average must contain the true one, or the scheme can hand a cell a
+  // negative depth. Measured: the exact right-going shock runs at 12.331739
+  // m/s, the shipped estimate says 21.529455 (bounds it, 74.6% over), and Davis
+  // says 9.902853 -- 19.7% SHORT of a wave it is supposed to enclose.
+  //
+  // The slack is 1e-9 of the wave speed and is the recovery's own resolution:
+  // the left speed is EQUAL to the exact rarefaction head here (both are
+  // uL - cL, since h* < hL leaves qL = 1) and the Galilean shift costs a ulp.
+  {
+    const [hL, uL, hR, uR] = CASES[0];
+    const e = exact(hL, uL, hR, uR), r = recover(hL, uL, hR, uR);
+    const slack = 1e-9 * Math.max(Math.abs(e.SL), Math.abs(e.SR));
+    assert(`strong shock hL=${hL} hR=${hR}: sL bounds the exact left wave`,
+      r.sL <= e.SL + slack,
+      `sL = ${fmt(r.sL)} must not exceed the exact ${fmt(e.SL)} m/s`);
+    assert(`strong shock hL=${hL} hR=${hR}: sR bounds the exact right wave`,
+      r.sR >= e.SR - slack,
+      `sR = ${fmt(r.sR)} against the exact shock ${fmt(e.SR)} m/s, ${(100 * (r.sR / e.SR - 1)).toFixed(1)}% over`);
+  }
+
+  // (d) AND NOT BY TOO MUCH. A fan that bounds the true one by a mile is safe
+  // and diffusive, so the bound above needs a companion. At 10:1 the shipped
+  // estimate is 8.380% over the exact shock speed and an h* 20% high is 28.007%
+  // over (both measured). 15% is a PLAUSIBILITY BAND placed between them -- the
+  // geometric middle of 8.4 and 28 is 15.3 -- and not a number from anywhere
+  // else. It is deliberately not applied to (c), where the shipped estimate is
+  // itself 74.6% over: that is what the two-rarefaction estimate costs at a
+  // 100:1 ratio, and it is the price of the guarantee in (c).
+  {
+    const [hL, uL, hR, uR] = CASES[1];
+    const e = exact(hL, uL, hR, uR), r = recover(hL, uL, hR, uR);
+    const over = r.sR / e.SR - 1;
+    assert(`shock hL=${hL} hR=${hR}: sR is tight as well as safe`, over <= 0.15,
+      `${(100 * over).toFixed(3)}% over the exact ${fmt(e.SR)} m/s; h* 20% high measures 28.007%`);
+  }
+
+  // (e) AND THE PIN. (b) to (d) say the estimate is good; this one says WHICH
+  // estimate it is, to the last bit, and it is the check that will go red if
+  // somebody deliberately swaps in a better one. That is its job: the three
+  // physical checks above decide whether the replacement is acceptable, this
+  // one makes sure the swap cannot happen silently. It is a transcription of
+  // the two-rarefaction formula, not an independent target, and it is labelled
+  // that way so nobody reads it as verification.
+  for (const [hL, uL, hR, uR] of CASES) {
+    const est = estimate(hL, uL, hR, uR), r = recover(hL, uL, hR, uR);
+    check(`hllc uses the declared two-rarefaction speeds, hL=${hL} hR=${hR}`,
+      r.sR, est.sR, 1e-12,
+      `recovered ${fmt(r.sR)} against the transcribed estimate ${fmt(est.sR)} m/s (h* = ${fmt(est.hStar)} m)`);
+  }
+}
+
+// ===========================================================================
+console.log('\n=== 10. the open boundaries: outflow() and makeSponge() ============\n');
+// ===========================================================================
+//
+// Until 2026-08-14 this file imported { ShallowWater, reflect, periodic } and
+// nothing else, so neither outflow() nor makeSponge() was exercised by it at
+// all. makeSponge() was exercised by NOTHING: tools/waves.mjs calls it for the
+// `shoal` case, but no verification suite did, and the audit's advice was
+// "cover it or delete it". It stays, because deleting it would silently change
+// the offshore-shoal result, and it is covered here.
+//
+// THE HONEST SCOPE OF THIS SECTION. verify-tide.mjs is where an open boundary
+// is really put on trial -- it is the suite that caught the historical Flather
+// bug, a boundary that reflected 98.19% of an outgoing pulse. This section is
+// not a replacement for that. It is the minimum that makes these two functions
+// impossible to break unnoticed: what outflow() writes into the ghost cells,
+// that a steady stream can leave through it, and that both of them absorb an
+// outgoing pulse where a wall returns it.
+{
+  // (a) ZERO-GRADIENT, GHOST BY GHOST. The contract is that every ghost cell
+  // holds a bit-exact copy of the nearest interior cell -- b, h, hu AND hv,
+  // with no sign change anywhere, which is the whole difference between this
+  // and reflect(). Measured: 64 ghost cells, 0 mismatches. Measured on a
+  // scratch copy with the two momenta negated (i.e. outflow() turned into a
+  // mirror): 128 mismatches, worst 11.887.
+  {
+    const nx = 7, ny = 5;
+    const sim = new ShallowWater({
+      nx, ny, dx: 3, dy: 4,
+      bed: (x, y) => -5 + 0.3 * Math.sin(x * 0.2) + 0.2 * Math.cos(y * 0.3),
+      eta0: (x, y) => 0.1 * Math.sin(x * 0.15) - 0.05 * Math.cos(y * 0.11),
+      manning: 0,
+    });
+    sim.boundaries = { west: outflow, east: outflow, south: outflow, north: outflow };
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const k = sim.idx(i, j);
+        // Signed and monotone, so a flip or a wrong source cell cannot cancel.
+        sim.hu[k] = sim.h[k] * (0.5 + 0.1 * i);
+        sim.hv[k] = sim.h[k] * (-0.3 - 0.05 * j);
+      }
+    }
+    sim.applyBC();
+    const ng = sim.ng;
+    let ghosts = 0, bad = 0, worst = 0;
+    for (let j = -ng; j < ny + ng; j++) {
+      for (let i = -ng; i < nx + ng; i++) {
+        if (i >= 0 && i < nx && j >= 0 && j < ny) continue;
+        ghosts++;
+        const g = sim.idx(i, j);
+        const s = sim.idx(Math.max(0, Math.min(nx - 1, i)), Math.max(0, Math.min(ny - 1, j)));
+        for (const f of ['b', 'h', 'hu', 'hv']) {
+          const d = Math.abs(sim[f][g] - sim[f][s]);
+          if (d !== 0) { bad++; worst = Math.max(worst, d); }
+        }
+      }
+    }
+    assert('outflow: every ghost is a bit-exact copy of the nearest interior cell',
+      bad === 0 && ghosts === (nx + 2 * ng) * (ny + 2 * ng) - nx * ny,
+      `${ghosts} ghosts, ${bad} mismatched fields, worst ${worst}`);
+  }
+
+  // (b) A STEADY STREAM LEAVES. A uniform current over a flat bed is an exact
+  // steady solution, and with zero-gradient at both ends every interface sees
+  // identical left and right states, so the flux divergence is identically zero
+  // and the state must stay uniform TO THE BIT. Measured: 0 departure and 0
+  // volume drift after 200 steps and 24.1 m of travel. Measured with the ghost
+  // momenta negated: 6.087488070075575 and 7.329e-4.
+  {
+    const h0 = 4, u0 = 1.5, STEPS = 200;
+    const sim = new ShallowWater({ nx: 30, ny: 4, dx: 5, bed: () => -h0, eta0: 0, manning: 0 });
+    sim.boundaries = { west: outflow, east: outflow, south: periodic, north: periodic };
+    uniform(sim, h0, u0, 0);
+    const v0 = sim.volume();
+    const dt = 0.5 * sim.maxDt();
+    for (let s = 0; s < STEPS; s++) sim.step(dt);
+    assert('outflow: a uniform stream crosses it without noticing',
+      nonUniformity(sim) === 0,
+      `max departure ${nonUniformity(sim)} after ${STEPS} steps, ${fmt(u0 * sim.t)} m of travel; volume drift ${((sim.volume() - v0) / v0).toExponential(3)}`);
+  }
+
+  // (c) AND THEY ABSORB. A right-going Gaussian (u = eta sqrt(g/h), so the
+  // leftward characteristic is zero everywhere at t = 0) down a flat channel,
+  // with a gauge at x = 700 m; the incident pass is over by t = 75 s and
+  // anything the boundary sends back reaches the gauge at about t = 106 s.
+  // Measured 2026-08-14, all three on the same ruler:
+  //
+  //   solid wall (the control)          99.559%
+  //   outflow                            0.126%
+  //   wall + sponge, width 40, str 0.08  0.123%
+  //
+  // The control is what makes this a measurement rather than an assertion: it
+  // says the rig can tell a mirror from an absorber. Measured with outflow()
+  // turned into a mirror, it reads 99.472% -- i.e. the wall.
+  //
+  // WHAT THIS DOES NOT SHOW. It does not show outflow() is as good as
+  // flather(). Zero-gradient is EXACTLY transparent to a purely outgoing wave,
+  // because copying the interior state also copies its zero incoming
+  // characteristic; it is the case where the two boundaries agree by
+  // construction. Where zero-gradient fails is where an incoming signal has to
+  // be prescribed, or where the outgoing wave is oblique or is riding on a mean
+  // level -- none of which this rig contains, and all of which are
+  // verify-tide.mjs's territory. The thresholds below are therefore placed
+  // between a mirror and an absorber (a factor of 790 apart on this rig), not
+  // between two absorbers.
+  {
+    const nx = 200, dx = 5, h0 = 10, A = 0.1, SIG = 80, X0 = 250, XG = 700;
+    const T = 150, TSPLIT = 75;
+    const channel = (east, sponge) => {
+      const sim = new ShallowWater({
+        nx, ny: 1, dx, bed: () => -h0, manning: 0,
+        eta0: (x) => A * Math.exp(-(((x - X0) / SIG) ** 2)),
+      });
+      sim.boundaries = { west: reflect, east, south: reflect, north: reflect };
+      for (let i = 0; i < nx; i++) {
+        const k = sim.idx(i, 0);
+        sim.hu[k] = sim.h[k] * (sim.b[k] + sim.h[k]) * Math.sqrt(G / h0);   // right-going
+      }
+      if (sponge) sim.forcing = makeSponge(sim, { side: 'east', etaRef: 0, ...sponge });
+      const kg = sim.idx(Math.round(XG / dx), 0);
+      const dt = 0.9 * sim.maxDt();
+      let incident = 0, back = 0;
+      while (sim.t < T) {
+        sim.step(dt);
+        const e = Math.abs(sim.b[kg] + sim.h[kg]);
+        if (sim.t < TSPLIT) incident = Math.max(incident, e); else back = Math.max(back, e);
+      }
+      return { incident, back, R: back / incident };
+    };
+    const wall = channel(reflect, null);
+    const open = channel(outflow, null);
+    const spng = channel(reflect, { width: 40, strength: 0.08 });
+    assert('open boundary: the rig can see a reflection at all (control)',
+      wall.R > 0.9,
+      `a solid wall returns ${(100 * wall.R).toFixed(3)}% of a ${fmt(wall.incident)} m pulse`);
+    assert('outflow: an outgoing pulse leaves', open.R < wall.R / 100,
+      `${(100 * open.R).toFixed(3)}% returned against the wall's ${(100 * wall.R).toFixed(3)}%`);
+    assert('makeSponge: an outgoing pulse is absorbed before the wall',
+      spng.R < wall.R / 100,
+      `${(100 * spng.R).toFixed(3)}% returned through a width-40 sponge in front of the same wall`);
+  }
+
+  // (d) AND THE SPONGE LEAVES A LAKE AT REST ALONE. It relaxes toward
+  // max(0, etaRef - b), which on a still lake at etaRef IS the depth, so the
+  // relaxation term must be identically zero however strong it is. Measured
+  // with the DEFAULT width and strength: 8.882e-16 m after 40 steps, which is 4
+  // ulp of the 8 m depth and is the solver's own well-balancing roundoff, not
+  // the sponge. A sponge that relaxed toward max(0, etaRef) instead -- dropping
+  // the bed -- would drain this lake by 8 m.
+  {
+    const sim = new ShallowWater({
+      nx: 40, ny: 8, dx: 10,
+      bed: (x, y) => -8 + 3 * Math.sin(x * 0.01) * Math.cos(y * 0.02), eta0: 0, manning: 0,
+    });
+    sim.boundaries = { west: reflect, east: reflect, south: reflect, north: reflect };
+    sim.forcing = makeSponge(sim, { side: 'east', etaRef: 0 });
+    const h0 = Float64Array.from(sim.h);
+    const dt = 0.5 * sim.maxDt();
+    let d = 0;
+    for (let s = 0; s < 40; s++) sim.step(dt);
+    for (let j = 0; j < sim.ny; j++) {
+      for (let i = 0; i < sim.nx; i++) {
+        const k = sim.idx(i, j);
+        d = Math.max(d, Math.abs(sim.h[k] - h0[k]));
+      }
+    }
+    check('makeSponge: a lake at rest is left alone', d, 0, 1e-14,
+      `max |dh| = ${d.toExponential(3)} m over ${sim.nx * sim.ny} cells after 40 steps, max speed ${fmt(sim.maxSpeed())} m/s`);
   }
 }
 
