@@ -32,6 +32,14 @@
   td:last-child { text-align:right; color:var(--hi); }
   .note { color:var(--dim); font-size:10.5px; line-height:1.45; margin:8px 0 0; }
   .warn { color:#e8b45c; }
+  .hide { display:none; }
+  .chk { display:flex; gap:6px; align-items:center; margin:6px 0 0; color:var(--dim); font-size:11px; }
+  .chk input { accent-color:var(--hi); }
+  /* The honesty label is drawn ON the canvas so a screenshot carries it. It is
+     mirrored here as selectable text, from the SAME array of strings, because a
+     canvas cannot be copied out of. */
+  #glabel { color:var(--dim); font-size:10px; line-height:1.4; white-space:pre-wrap;
+            margin:8px 0 0; border-top:1px solid var(--line); padding-top:8px; }
 </style>
 </head>
 <body>
@@ -40,6 +48,16 @@
   <h1>Water</h1>
   <p class="sub">Nonlinear shallow-water equations. Well-balanced, wetting/drying.</p>
 
+  <fieldset>
+    <legend>scene</legend>
+    <select id="scene">
+      <option value="coast">coast — Cartesian patch, metres</option>
+      <option value="globe">globe — sphere, degrees</option>
+    </select>
+    <p class="note" id="scenenote"></p>
+  </fieldset>
+
+  <div id="coastPanels">
   <fieldset>
     <legend>shoreline</legend>
     <select id="shoreline"></select>
@@ -70,6 +88,46 @@
     <input type="range" id="S" min="1" max="40" step="1" value="10">
     <label class="row"><span>resolution</span><output id="oQ"></output></label>
     <input type="range" id="Q" min="50" max="140" step="10" value="100">
+  </fieldset>
+  </div><!-- /coastPanels -->
+
+  <div id="globePanels" class="hide">
+  <fieldset>
+    <legend>aquaplanet</legend>
+    <label>bed</label>
+    <select id="gbed"></select>
+    <label>initial surface</label>
+    <select id="ginit"></select>
+    <label class="row"><span>amplitude</span><output id="oGA"></output></label>
+    <input type="range" id="GA" min="1" max="40" step="1" value="10">
+    <label class="row"><span>grid</span><output id="oGD"></output></label>
+    <input type="range" id="GD" min="0" max="3" step="1" value="1">
+    <label class="row"><span>latitude cap</span><output id="oGC"></output></label>
+    <input type="range" id="GC" min="0" max="2" step="1" value="0">
+    <p class="chk"><input type="checkbox" id="gomega"><label for="gomega" style="margin:0">Coriolis: &Omega; = 7.292115e-5 rad/s (Earth). Off is the case the closed-form period assumes.</label></p>
+    <p class="note">Click the globe to drop a 1 m, 8&deg; Gaussian bump at that longitude and latitude &mdash; through the same inverse projection the pixels use.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>globe view</legend>
+    <label class="row"><span>colour scale &plusmn;</span><output id="oGS"></output></label>
+    <input type="range" id="GS" min="1" max="40" step="1" value="5">
+    <label class="row"><span>view latitude</span><output id="oGT"></output></label>
+    <input type="range" id="GT" min="-80" max="80" step="2" value="22">
+    <label class="row"><span>spin</span><output id="oGR"></output></label>
+    <input type="range" id="GR" min="-30" max="30" step="1" value="6">
+    <p class="chk"><input type="checkbox" id="ggrat" checked><label for="ggrat" style="margin:0">graticule, every 30&deg;</label></p>
+    <p class="chk"><input type="checkbox" id="gland" checked><label for="gland" style="margin:0">light the LAND (never the water)</label></p>
+    <p class="chk"><input type="checkbox" id="gterm" checked><label for="gterm" style="margin:0">terminator LINE &mdash; marks where the land light grazes, so it needs the land light on. There is no day and night to draw: &Omega; = 0.</label></p>
+    <div class="btns"><button id="gmeas">measure mode period</button></div>
+    <p class="note" id="gmeasnote">Runs the projection-and-zero-crossing measurement on the CURRENT
+      grid against &omega;&sup2; = gHn(n+1)/R&sup2;. It blocks for a few seconds &mdash; 2 periods at
+      3&deg; is ~8800 steps.</p>
+  </fieldset>
+  </div><!-- /globePanels -->
+
+  <fieldset>
+    <legend>run</legend>
     <div class="btns"><button id="run">pause</button><button id="reset">reset</button></div>
   </fieldset>
 
@@ -84,26 +142,44 @@
       <tr><td>wetted area</td><td id="r_wet">&mdash;</td></tr>
       <tr><td id="r_vol_lab">volume drift</td><td id="r_vol">&mdash;</td></tr>
       <tr><td>section exaggeration</td><td id="r_ex">&mdash;</td></tr>
+      <tr><td>time compression</td><td id="r_comp">&mdash;</td></tr>
       <tr><td>ms / frame solve + draw</td><td id="r_ms">&mdash;</td></tr>
     </table>
     <p class="note" id="volnote"></p>
     <p class="note" id="reswarn"></p>
+    <p id="glabel" class="hide"></p>
   </fieldset>
 
-  <p class="note">
+  <p class="note" id="coastNote1">
     The colour scale is fixed, never auto-ranged: auto-ranging looks better and lies,
     because a calm frame gets stretched until numerical noise fills the range.
     The colour ramp is symmetric in CIE lightness about mean sea level, so a crest and a
     trough of equal size are equally visible &mdash; measured, not asserted; see the header
     of src/render.mjs for what the previous ramp actually did.
   </p>
-  <p class="note">
+  <p class="note" id="coastNote2">
     Cells per wavelength is reported <em>offshore &rarr; shallow end</em>, and the warning
     is on the SHALLOW one. L scales with sqrt(h), so a shoaling wave is resolved worse the
     closer it gets to the beach: the offshore figure is the flattering one and it is not
     what decides whether a wave height means anything. The shallow end is taken at the
     shallowest wet cell, but no shallower than the depth-limited breaking depth H/0.78 &mdash;
     past that the wave is a bore and a wavelength criterion no longer describes it.
+  </p>
+  <p class="note hide" id="globeNote">
+    The globe is drawn by INVERSE ORTHOGRAPHIC ray-sphere sampling: for every screen pixel inside
+    the disc, z = &radic;(1 &minus; x&sup2; &minus; y&sup2;), rotate to (lon, lat), sample the cell that
+    contains it. That is not an approximation of the projection, it <em>is</em> the projection.
+    The pixel &rarr; (lon, lat) table is baked once per size &mdash; rotation only ADDS a constant to
+    longitude and cannot change a latitude &mdash; and <code>node src/globe.mjs</code> checks the
+    table against the live computation to the bit, over the whole disc at eight rotations, with a
+    one-ULP control to show the check can fail. 108 checks, including the two that matter:
+    a resting ocean must be a single flat colour at all 24 rotations, which any shading term breaks;
+    and over a field with a wave in it, every painted byte must be
+    <code>surfaceColour(b + h &minus; msl, scale)</code>, which is what pins the sign, the scale and
+    the rotation. Both are needed &mdash; a renderer that always paints mean sea level scores a
+    perfect zero on the resting-ocean test alone, and for a while one that inverted the sign did too.
+    <code>GlobeView.draw()</code> itself is run against a recording canvas, so the graticule, the
+    limb stroke and the terminator are checked at the coordinates they are drawn at.
   </p>
 </aside>
 
@@ -113,10 +189,25 @@ import { shoreline, SHORELINES } from './src/shorelines.mjs';
 import { regularWave, jonswapSea, BREAKER_INDEX } from './src/waves.mjs';
 import { Tide } from './src/tide.mjs';
 import { WaterView } from './src/render.mjs';
+import { GlobeView, GLOBE_BEDS, GLOBE_INITS, globeLabel, measureModePeriod, dropBump }
+  from './src/globe.mjs';
+
+// DECLARED HERE, not imported from src/swe.mjs. The globe's label prints a closed
+// form -- omega^2 = g H n(n+1)/R^2 -- and a target built from the solver's own
+// gravity rescales with any error in it, so the label would agree with a solver
+// whose g was 10% wrong. Same discipline as tools/verify.mjs:105.
+const G_REF = 9.80665, R_REF = 6371e3;
 
 const $ = id => document.getElementById(id);
-const view = new WaterView($('c'));
+const coastView = new WaterView($('c'));
+const globeView = new GlobeView($('c'));
+let view = coastView;
+let scene = 'coast';
 let sim = null, running = true, v0 = 0, msl = 0;
+// Globe state that outlives a rebuild: the last measured mode period (cleared when
+// the grid changes, because it was measured on the old one) and the wall clock the
+// measured time compression is taken against.
+let merian = null, gLabel = [], compAcc = 0, compT0 = 0, compSim0 = 0;
 // Is a Flather boundary open? If so, mass crosses the west edge on purpose and
 // the volume readout is NOT a conservation measure -- see the note it prints.
 let radiating = false;
@@ -131,7 +222,15 @@ for (const [k, s] of Object.entries(SHORELINES)) {
 }
 sel.value = 'headlandBay';
 
+// The two scenes are two functions and one loop. build() dispatches; everything
+// after it -- the readout, the frame timing, the pause button, window.water -- is
+// shared, so the "solve + draw" counters keep measuring the same thing in both.
 function build() {
+  if (scene === 'globe') buildGlobe(); else buildCoast();
+  compT0 = performance.now(); compSim0 = sim.t; compAcc = 0;
+}
+
+function buildCoast() {
   const name = sel.value;
   const { bed, meta } = shoreline(name);
   $('blurb').textContent = meta.blurb;
@@ -201,13 +300,157 @@ function build() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The globe. An AQUAPLANET on a latitude-longitude sphere -- see the label it
+// prints, and src/globe.mjs's header for why the water is not shaded.
+// ---------------------------------------------------------------------------
+const GLOBE_DEG = [6, 4, 3, 2];          // degrees per cell, coarse to fine
+const GLOBE_CAP = [90, 80, 70];          // latitude cap; 90 is the full sphere
+
+function buildGlobe() {
+  const deg = GLOBE_DEG[+$('GD').value];
+  const cap = GLOBE_CAP[+$('GC').value];
+  const bedSpec = GLOBE_BEDS[$('gbed').value];
+  const initSpec = GLOBE_INITS[$('ginit').value];
+  const amp = +$('GA').value / 20;                       // 0.05 .. 2.00 m
+  const omega = $('gomega').checked ? 7.292115e-5 : 0;
+  const nx = Math.round(360 / deg), ny = Math.round(2 * cap / deg);
+
+  sim = new ShallowWater({
+    nx, ny, bed: bedSpec.bed, eta0: initSpec.eta(amp),
+    // Manning 0 and no forcing: the closed-form mode period is for a frictionless,
+    // unforced ocean, and the label claims that comparison. Anything switched on
+    // here has to be switched on in the label too, which is why the label reads
+    // the sim instead of being told.
+    manning: 0, cfl: 0.45,
+    sphere: { R: R_REF, lat0: -cap, lat1: cap, omega },
+  });
+  // Longitude is periodic and the caps are walls (or, at +-90, zero-length faces
+  // that close themselves) -- that is the constructor's default for a sphere, and
+  // it is repeated here so it is visible rather than inherited.
+  sim.boundaries = { west: periodic, east: periodic, south: reflect, north: reflect };
+  radiating = false;
+  cpwOffshore = 0; waveT = 0; hBreak = 0; cellDx = 0;
+  msl = 0;
+  v0 = sim.volume();
+
+  // Time compression: aim for one closed-form mode period in about 40 seconds of
+  // wall clock at 60 animation frames per second. The REQUESTED slice is set here;
+  // the label prints the DELIVERED ratio, measured against the clock.
+  const period = 2 * Math.PI * R_REF / Math.sqrt(G_REF * 4000 * 2 * 3);
+  sim._speed = period / 80;
+
+  globeView.scale = +$('GS').value / 10;
+  globeView.tiltDeg = +$('GT').value;
+  globeView.spinDegPerSec = +$('GR').value;
+  globeView.graticule = $('ggrat').checked;
+  globeView.landLight = $('gland').checked;
+  globeView.terminator = $('gterm').checked;
+  // The measured period belonged to the OLD grid. Keeping it would put a number on
+  // screen that was measured somewhere else, which is the whole failure mode this
+  // label exists to prevent.
+  merian = null;
+  $('gmeasnote').textContent = 'Not measured on this grid yet. Runs the projection-and-'
+    + 'zero-crossing measurement against omega^2 = gHn(n+1)/R^2; it blocks for a few seconds.';
+  $('r_grid').textContent = `${nx} x ${ny} @ ${deg.toFixed(0)}°`
+    + (cap < 90 ? `, cap ±${cap}°` : '');
+  $('r_vol_lab').textContent = 'volume drift';
+  $('volnote').innerHTML = 'Volume drift, and on the sphere it <em>is</em> a conservation measure: '
+    + 'longitude is periodic (the same water, not a boundary) and the caps are walls, so no mass '
+    + 'can enter or leave. At &plusmn;90&deg; the pole face has length exactly zero and closes itself.';
+  $('r_cpw').textContent = 'n/a';
+  $('reswarn').innerHTML = '';
+  refreshGlobeLabel();
+}
+
+/** Rebuild the honesty label. Cheap, and done on every readout so the measured
+ *  time compression on it is this second's, not the one at build time. */
+function refreshGlobeLabel(compression = null) {
+  const initSpec = GLOBE_INITS[$('ginit').value];
+  const bedSpec = GLOBE_BEDS[$('gbed').value];
+  gLabel = globeLabel(sim, {
+    bedName: bedSpec.title, bedNote: bedSpec.note,
+    initName: `${initSpec.title}, amplitude ${(+$('GA').value / 20).toFixed(2)} m`,
+    scale: globeView.scale, merian, compression,
+    // The RADIUS the camera used, not half the canvas: the disc is inset, and the
+    // label turns degrees of arc into pixels with it. ZERO until the first frame
+    // has been drawn, and globeLabel() then declines to print a px figure at all
+    // rather than inventing one -- this call happens at build time, before any
+    // draw, so on the very first label that is the branch that runs.
+    discR: globeView.discR, gRef: G_REF, modeN: initSpec.mode || 2,
+    // THE MEASURED SATURATED FRACTION of the last frame the renderer painted.
+    // The globe refuses a Lambert term because it makes two elevations share one
+    // lightness; the colour ramp's own clamp does exactly that above full scale,
+    // and at the top of the "colour scale" slider it does it over 72% of the
+    // disc. renderGlobe() counts it, GlobeView.draw() keeps the count, and this
+    // is where it reaches the caption -- one frame late, and the line says so.
+    saturation: globeView.stats,
+  });
+  globeView.label = gLabel;
+  $('glabel').textContent = gLabel.join('\n');
+}
+
+function measureGlobePeriod() {
+  const deg = GLOBE_DEG[+$('GD').value], cap = GLOBE_CAP[+$('GC').value];
+  const n = GLOBE_INITS[$('ginit').value].mode || 2;
+  $('gmeasnote').textContent = `measuring n = ${n} at ${deg}° ...`;
+  // One turn of the event loop so that message is painted before the blocking run.
+  setTimeout(() => {
+    const t0 = performance.now();
+    const r = measureModePeriod({
+      n, deg, H: 4000, R: R_REF, gRef: G_REF, amp: 1, periods: 2, lat0: -cap, lat1: cap,
+    });
+    const wall = (performance.now() - t0) / 1000;
+    merian = { ...r, note: `(${r.crossings} crossings, ${r.steps} steps, ${wall.toFixed(1)} s)` };
+    $('gmeasnote').innerHTML = `n = ${n} at ${deg}°${cap < 90 ? `, cap ±${cap}°` : ''}: `
+      + `measured ${(r.measured / 3600).toFixed(4)} h against the closed form `
+      + `${(r.closed / 3600).toFixed(4)} h, ${(100 * r.rel).toFixed(4)}%. `
+      + `Amplitude ${r.amp0.toFixed(4)} &rarr; ${r.ampEnd.toFixed(4)} m over 2 periods. `
+      + `Measured on a SEPARATE sim built for the purpose, so it does not disturb the one on screen.`
+      + (cap < 90 ? ' A latitude cap puts reflecting walls where the closed form has none, so this'
+        + ' number is not a clean test of the formula.' : '');
+    refreshGlobeLabel();
+  }, 0);
+}
+
+function setScene(next) {
+  scene = next;
+  view = next === 'globe' ? globeView : coastView;
+  $('coastPanels').classList.toggle('hide', next === 'globe');
+  $('globePanels').classList.toggle('hide', next !== 'globe');
+  $('coastNote1').classList.toggle('hide', next === 'globe');
+  $('coastNote2').classList.toggle('hide', next === 'globe');
+  $('globeNote').classList.toggle('hide', next !== 'globe');
+  $('glabel').classList.toggle('hide', next !== 'globe');
+  $('scenenote').textContent = next === 'globe'
+    ? 'A latitude-longitude sphere, drawn by inverse orthographic sampling. Degrees, not metres: '
+      + 'the coastal fields are 0.02-0.03 degrees of arc across and cannot be drawn here.'
+    : 'A Cartesian patch of coast, metres. Waves, tides and run-up over six shorelines.';
+  build();
+}
+
 function syncOuts() {
   $('oH').textContent = (+$('H').value / 10).toFixed(1) + ' m';
   $('oT').textContent = $('T').value + ' s';
   $('oR').textContent = (+$('R').value / 10).toFixed(1) + ' m';
   $('oS').textContent = (+$('S').value / 10).toFixed(1) + ' m';
   $('oQ').textContent = $('Q').value + '%';
-  view.scale = +$('S').value / 10;
+  // Each view owns its own colour scale. One shared `view.scale` would carry the
+  // coastal slider's 1.0 m onto a globe whose whole signal is 0.5 m.
+  coastView.scale = +$('S').value / 10;
+  const deg = GLOBE_DEG[+$('GD').value], cap = GLOBE_CAP[+$('GC').value];
+  $('oGA').textContent = (+$('GA').value / 20).toFixed(2) + ' m';
+  $('oGD').textContent = `${deg}° = ${Math.round(360 / deg)} x ${Math.round(2 * cap / deg)}`;
+  $('oGC').textContent = cap === 90 ? 'none (full sphere)' : `±${cap}°`;
+  $('oGS').textContent = (+$('GS').value / 10).toFixed(1) + ' m';
+  $('oGT').textContent = (+$('GT').value) + '°';
+  $('oGR').textContent = (+$('GR').value) + '°/s';
+  globeView.scale = +$('GS').value / 10;
+  globeView.tiltDeg = +$('GT').value;
+  globeView.spinDegPerSec = +$('GR').value;
+  globeView.graticule = $('ggrat').checked;
+  globeView.landLight = $('gland').checked;
+  globeView.terminator = $('gterm').checked;
 }
 
 // TWO counters, because one was measuring half the frame. `msAcc` was advertised
@@ -254,6 +497,27 @@ function readout() {
   $('r_ex').textContent = view.exaggeration
     ? (view.exaggeration >= 10 ? view.exaggeration.toFixed(0) : view.exaggeration.toFixed(1)) + 'x'
     : 'n/a';
+  // TIME COMPRESSION, MEASURED. Simulated seconds per wall-clock second, taken
+  // against the clock rather than off the requested slice: the loop asks for a
+  // fixed slice of simulated time per frame and gets whatever the machine
+  // delivers, so the requested figure is a wish and this one is a measurement. It
+  // is also the only readout on this panel that would notice the tab being
+  // throttled in the background.
+  // DERIVED from whether the clock moved, not from the pause flag: `running` says
+  // what the button was set to, and the question here is whether this second's
+  // simulated time actually advanced. A flag would keep the paused seconds in the
+  // averaging window and report a compression that had never happened.
+  const wall = (performance.now() - compT0) / 1000;
+  const dSim = sim.t - compSim0;
+  if (dSim <= 0) {
+    $('r_comp').textContent = 'paused';
+    compT0 = performance.now();
+  } else if (wall > 0.25) {
+    compAcc = dSim / wall;
+    $('r_comp').textContent = compAcc >= 10 ? compAcc.toFixed(0) + 'x' : compAcc.toFixed(2) + 'x';
+    compT0 = performance.now(); compSim0 = sim.t;
+  }
+  if (scene === 'globe') refreshGlobeLabel(compAcc || null);
   // Cells per wavelength AT THE SHALLOW END, which is the binding figure. This
   // used to be reported offshore only, and warned only if THAT was under 40 --
   // certifying the resolution by the metric this project documents as the wrong
@@ -272,9 +536,19 @@ function readout() {
   }
 }
 
+let lastFrame = 0;
 function loop() {
   requestAnimationFrame(loop);
   if (!sim) return;
+  // The globe's spin is advanced by WALL time, not per frame, so the rotation rate
+  // on the label means degrees per second and not degrees per whatever the frame
+  // rate happens to be. It is a camera move: it does not touch the sim.
+  const now = performance.now();
+  if (scene === 'globe' && lastFrame) {
+    globeView.rotDeg = (globeView.rotDeg
+      + globeView.spinDegPerSec * Math.min(0.25, (now - lastFrame) / 1000)) % 360;
+  }
+  lastFrame = now;
   if (running) {
     const t0 = performance.now();
     // Advance a fixed slice of simulated time per frame so the animation runs at
@@ -299,14 +573,75 @@ for (const id of ['shoreline', 'mode']) $(id).addEventListener('input', build);
 $('reset').addEventListener('click', build);
 $('run').addEventListener('click', () => { running = !running; $('run').textContent = running ? 'pause' : 'run'; });
 
-syncOuts(); build(); loop();
+// Globe controls. GS/GT/GR and the three checkboxes are VIEW state and must not
+// rebuild the sim -- restarting the ocean because someone changed the colour scale
+// would throw away the run they were watching.
+for (const id of ['GS', 'GT', 'GR', 'ggrat', 'gland', 'gterm']) {
+  $(id).addEventListener('input', () => { syncOuts(); if (scene === 'globe') refreshGlobeLabel(compAcc || null); });
+}
+for (const id of ['gbed', 'ginit', 'GA', 'GD', 'GC', 'gomega']) {
+  $(id).addEventListener('input', () => { syncOuts(); if (scene === 'globe') build(); });
+}
+$('gmeas').addEventListener('click', measureGlobePeriod);
+$('scene').addEventListener('input', () => setScene($('scene').value));
+for (const [k, s] of Object.entries(GLOBE_BEDS)) {
+  const o = document.createElement('option'); o.value = k; o.textContent = s.title; $('gbed').appendChild(o);
+}
+for (const [k, s] of Object.entries(GLOBE_INITS)) {
+  const o = document.createElement('option'); o.value = k; o.textContent = s.title; $('ginit').appendChild(o);
+}
+$('ginit').value = 'mode2';
+
+// Click the globe to drop a stone. This runs the SAME inverse projection the
+// pixels run -- globeView.pickLonLat -> orthoInversePixel -- so it is also a
+// visible check of it: the bump appears under the cursor or the projection is
+// wrong.
+$('c').addEventListener('pointerdown', (ev) => {
+  if (scene !== 'globe' || !sim) return;
+  const q = globeView.pickLonLat(ev.clientX, ev.clientY);
+  if (!q) return;
+  dropBump(sim, q[0], q[1], { amp: 1, sigmaDeg: 8 });
+});
+
+syncOuts(); setScene('coast'); loop();
 // `advance` and `readout` exist so this page can be driven and read without a
 // compositor. Everything here calls the same functions the animation loop does.
 window.water = {
-  get sim() { return sim; }, view, build, readout,
+  get sim() { return sim; }, get view() { return view; }, build, readout,
+  // The globe's honesty label, its pure functions and its own measurement, exposed
+  // for the same reason `readout` is: a check that cannot read the label cannot
+  // check the label, and rAF may never fire in a hidden tab.
+  get scene() { return scene; },
+  setScene,
+  get label() { return gLabel; },
+  globe: {
+    view: globeView,
+    get merian() { return merian; },
+    measure: measureGlobePeriod,
+    label: () => gLabel,
+    pick: (x, y) => globeView.pickLonLat(x, y),
+    // The last frame's renderGlobe() stats -- wet, dry, the elevation extremes it
+    // painted, and how many water pixels landed at or past full scale. Exposed
+    // for the same reason `readout` is: the saturated fraction is now a published
+    // line on the label, and a published number a headless check cannot read is a
+    // number nobody will ever re-measure.
+    get stats() { return globeView.stats; },
+  },
   step: (n = 1) => { for (let i = 0; i < n; i++) sim.step(); },
-  advance: (frames = 1) => {
-    for (let f = 0; f < frames; f++) {
+  // FEEDS THE SAME TWO COUNTERS THE LOOP FEEDS, which it did not before.
+  // `advance` exists so the page can be driven where requestAnimationFrame never
+  // fires -- and in exactly that situation the "ms / frame solve + draw" readout
+  // sat on whatever the loop had accumulated before the tab stopped compositing,
+  // i.e. a stale figure or none at all. So the one number a headless check most
+  // wants to read was the one number driving the page headlessly could not
+  // produce. Same solve block, same view.draw(), same accumulators: this does not
+  // change what the published figure means, it makes it obtainable.
+  // The parameter is `nFrames`, not `frames`: `frames` is the module-level solve
+  // counter this function now has to increment, and shadowing it would make the
+  // increment write to the argument instead -- silently, since both are numbers.
+  advance: (nFrames = 1) => {
+    for (let f = 0; f < nFrames; f++) {
+      const t0 = performance.now();
       const budget = (1 / 30) * (sim._speed || 1);
       let done = 0, guard = 0;
       while (done < budget && guard++ < 400) {
@@ -314,8 +649,11 @@ window.water = {
         if (!(dt > 0)) break;
         done += sim.step(dt);
       }
+      msAcc += performance.now() - t0; frames++;
+      const td0 = performance.now();
+      view.draw(sim, { msl });
+      drawAcc += performance.now() - td0; drawFrames++;
     }
-    view.draw(sim, { msl });
     readout();
     return sim.t;
   },

@@ -10,6 +10,10 @@
 //   node tools/mutants.mjs --only vel   (mutants whose id or name contains "vel")
 //   node tools/mutants.mjs --jobs 4     (concurrency; the default is sized from
 //                                        the machine and printed in the banner)
+//   node tools/mutants.mjs --sphere-full
+//                                       (run tools/verify-sphere.mjs WHOLE instead of
+//                                        the filtered invocation the ladder uses --
+//                                        see THE SPHERE SUITE, AND WHAT IT COSTS)
 //
 // The usage line above used to read "(~4 min, 15 mutants, 3 suites)" and all
 // three numbers had drifted -- there were 16 mutants in the list when it still
@@ -43,13 +47,36 @@
 //                mutant caught only by a check with nothing to do with it is a
 //                coincidence, not coverage.
 //   SURVIVED     every suite the harness RUNS stayed green with the physics
-//                broken. Not the same as "every check in the repository":
-//                escalation covers the six suites in SUITE_ORDER, and five of
-//                waves.mjs's eight cases are too slow to be among them. This is
-//                a hole, and it exits the harness non-zero.
-//   TIMEOUT      the suite did not finish inside 3x its measured baseline. A
-//                hang is a detection, but it is not a check failing, so it is
-//                labelled separately and never counted as a passing check.
+//                broken. Not the same as "every check in the repository", and
+//                the difference is NOT a fixed number -- escalation covers
+//                exactly the suites in SUITE_ORDER, which the banner prints, and
+//                two things are deliberately left outside it: five of waves.mjs's
+//                eight cases, and section 4 of tools/verify-sphere.mjs. Both
+//                exclusions are stated where they are made, both are on cost
+//                grounds, and both mean a mutation only they could see would read
+//                SURVIVED. This is a hole, and it exits the harness non-zero.
+//   TIMEOUT ONLY the mutant's ONLY non-green result was a suite that was killed
+//                without printing a summary. NOT scored as a catch, its own
+//                bucket, and it FAILS the run: a killed process cannot say
+//                whether a check failed or whether the mutation made the
+//                simulation slow, and treating the two alike is how a hole comes
+//                to read as covered. A mutant with a TIMEOUT and a RED is CAUGHT
+//                by the RED, and escalation is what looks for that RED.
+//   TIMEOUT      the suite did not finish inside its timeout (3x its measured
+//                baseline by default, per-suite overridable in SUITES) AND
+//                printed no summary line. A hang is a detection, but it is not a
+//                check failing, so it is labelled separately and never counted as
+//                a passing check -- see TIMEOUT ONLY above for what the verdict
+//                does with it. A suite that printed its complete summary and
+//                then failed to TERMINATE is NOT this: it is reported as whatever
+//                its summary said, with the non-termination counted separately as
+//                an anomaly about the suite. That distinction was added on
+//                2026-08-17 after it produced a false CAUGHT -- see runSuite(),
+//                which carries the measurement (18 sequential runs of
+//                tools/verify-render.mjs, 2 of them alive when killed, both with
+//                all 14583 bytes of their output and their ALL PASS line already
+//                written). A spurious CAUGHT is the worst thing this harness can
+//                print, because a hole then reads as covered.
 //   CRASH        the suite threw (usually a NaN reaching an invariant). Also a
 //                detection, also not the same thing as a check failing.
 //   ANCHOR-ERROR the patch text was not found EXACTLY ONCE in the source, so
@@ -65,9 +92,13 @@
 // would be a probe measuring itself: it would prove that THIS file can detect
 // the mutation, which is not the question. The question is whether the suites
 // that ship with the repository and print the green numbers can. So the only
-// things run are tools/verify.mjs, tools/verify-physics.mjs,
-// tools/verify-tide.mjs and tools/waves.mjs, exactly as they ship -- with one
-// stated exception, line endings, below.
+// things run are the files named in SUITES below, exactly as they ship -- with
+// two stated exceptions: line endings, below, and the SECTION FILTER on
+// tools/verify-sphere.mjs, which is stated where it is applied and printed in
+// the banner of every run. THE LIST OF SUITES IS NOT REPEATED HERE. It was, and
+// it went stale twice over: it named four files when there were eight, and it
+// went on naming four after tools/verify-sphere.mjs landed. SUITES is the list;
+// the banner prints it.
 //
 // LINE ENDINGS, and why this file now normalises them.
 //
@@ -107,9 +138,16 @@
 // table three lines under the banner, and prints its own wall clock at the end.
 // Read those. A cost in a comment is a claim with nothing checking it.
 //
+// AND IT DRIFTED AGAIN, in the other direction. Re-measured 2026-08-17, each
+// suite alone and sequentially on the same 16-core machine: verify-physics 6.9 s,
+// verify-tide 260.0 s. So the 343.3 s above is now high by a third, and four
+// other comments in this file were quoting it as current until that pass. The
+// paragraph above was right about the mechanism and wrong to think writing the
+// number down once was the last time it would need doing.
+//
 // What the shape of those costs buys is worth stating, though, because it does
-// not change: verify-physics is forty times cheaper than verify-tide, so a
-// mutant aimed at the right suite costs almost nothing and a mutant aimed at
+// not change: verify-physics is nearly forty times cheaper than verify-tide, so
+// a mutant aimed at the right suite costs almost nothing and a mutant aimed at
 // the wrong one costs the whole run. That is the only reason the `suites` field
 // exists.
 //
@@ -156,10 +194,149 @@
 // printed hole is for. None of them is a known correctness gap; what is
 // established is only what this repository can and cannot see.
 //
+// FOUR ANCHORS WERE STALE WHEN THIS FILE WAS OPENED ON 2026-08-17, and the
+// harness was exiting 1. This is the failure this file's own header calls the
+// invisible one, arriving exactly as advertised, and it is worth reading before
+// the sphere section because it is the same lesson from the other end.
+//
+// The spherical port (f3d1351) rewrote the four lines that carry the metric out
+// of src/swe.mjs's hot loops -- the scalar dx and dy became per-row dxRow[j],
+// dyRowN[j], dyRowS[j+1], dyCFL[j] and bedDiv0/bedDiv1, and the Cartesian
+// Coriolis block became the `else` of a new spherical one. `--anchors` printed
+// "29/33 anchors found exactly once" and named them: coriolis-off, bedsource-zero,
+// ysweep-zero-flux, maxdt-max. All four are Cartesian mutants whose physics the
+// port did not touch at all; what moved was the TEXT they were pinned to. Repaired
+// in place, each with a note saying what moved and what the repair does and does
+// not still cover -- coriolis-off, in particular, now breaks only HALF of what its
+// name says, because the sphere has its own Coriolis block and a mutant that reads
+// CAUGHT while covering half its subject is worse than one that errors.
+//
+// The brittleness is deliberate and it worked: the harness refused to run rather
+// than quietly mutating nothing. What it cost is that the instrument was RED for
+// three days and the file it was reporting on was fine.
+//
+// THE SPHERE ARRIVED WITHOUT ITS SUITE, AND THEN THE SUITE ARRIVED AND THIS FILE
+// DID NOT NOTICE. Both halves matter, and the second half is the one that should
+// be read first, because it is the failure mode this harness exists to prevent
+// happening to somebody else's file.
+//
+// The first half is history. When the spherical mutants below were written
+// there was exactly ONE gate anywhere in the repository that ran a
+// spherical simulation -- section 8 of src/globe.mjs, a closed-form mode period
+// over a FLAT bed at ORDER 2 with omega = 0 -- and tools/verify-sphere.mjs had
+// been specified in detail, had its targets measured in advance, and had not been
+// delivered. TEN of those mutants were declared survivors on that basis, EIGHT of
+// them carrying `blocked: 'tools/verify-sphere.mjs'`, and this header said in so
+// many words that the file "does not exist".
+//
+// The second half is the defect. tools/verify-sphere.mjs DOES exist. It is green
+// at 248/248 in 237.2 s measured alone on this machine, and it
+// carries exactly the checks the ten declarations said were missing -- an area
+// identity against a locally declared radius, per-band sums, a resting lake over
+// relief at BOTH orders, an inertial oscillation at two latitudes, a zonal jet at
+// high latitude, and a rotation-invariance test across the antimeridian. All TEN
+// declarations were false. Measured 2026-08-17, each mutant against the full
+// 248-check suite in a scratch tree: every one of the ten is CAUGHT, and so are
+// the five spherical mutants that were already caught by globe. Fifteen for
+// fifteen.
+//
+// WHAT WENT WRONG IS NOT THAT THE DECLARATIONS WERE WRONG WHEN WRITTEN. They were
+// right on the morning they were written. What went wrong is that a declaration
+// of the form "the file that would catch this does not exist" is a claim about
+// the FILESYSTEM, and nothing in this harness was looking at the filesystem. The
+// `known` field is re-tested every run -- that is what promotion is for, and it
+// works -- but only against the suites the entry DECLARES, and these entries
+// declared `globe`, which cannot see them. So the one sentence in each entry that
+// could go stale was the one sentence nothing was checking. There is now a guard,
+// assertBlockedFilesAbsent(), which reads every `blocked` path off the disk and
+// FAILS if it is present; it is self-tested in both directions like the CRLF one,
+// and it would have turned this three-day-old lie into a hard error on day one.
+//
+// WHAT A FLAT BED AT ORDER 2 CANNOT SEE is still worth stating, because it is why
+// globe alone was never enough and why the entries below name a SECOND suite
+// rather than a tighter tolerance. Of the five spherical CORRECTNESS mutations on
+// the list, one shows on any bed at any order (the geometric source, 2.6e+2 m/s),
+// two need RELIEF and second order and are arithmetically identical to the shipped
+// code without it, one needs ORDER 1 and is identical at order 2, and one -- the
+// naive area -- cannot be caught by a still-water test at any resolution on any
+// bed, ever, because the error is a latitude-independent factor that divides out
+// of the balance. Two more (rotation) cannot be caught by any FLAT-bed omega = 0
+// case, because f is multiplied by nothing there. That was never five tolerances
+// to tighten; it was four cases and one identity, and verify-sphere has all five.
+//
+// THE SPHERE SUITE, AND WHAT IT COSTS. Dropping tools/verify-sphere.mjs whole into
+// the ladder would roughly double this harness: 237.2 s pristine, 217-237 s per
+// mutant measured, against verify-tide's 260.0 s, and it would be paid by every
+// escalating mutant as well as by every spherical one. Worse than the money, a
+// mutant that merely SLOWED the solver past 3x would read TIMEOUT, TIMEOUT used to
+// count as a detection, and the hole would print as covered -- the exact
+// false-CAUGHT hazard documented under runSuite().
+//
+// Both halves are dealt with, and neither by pretending:
+//
+//   COST.  The suite is entered as ONE FILTERED INVOCATION, `sphere`, which runs
+//          every section except 4 (merian). Section 4 is 185.9 s of the 237.2 s;
+//          the other eight sections together are 46.0 s and 192 of the 248 checks.
+//          MEASURED, not assumed: all fifteen spherical mutants were run against
+//          the full 248 and against the 192, and the filtered invocation catches
+//          every one of the fifteen -- same mutants, same verdicts, one fifth of
+//          the clock. What the filter drops is a closed-form spherical mode
+//          period, which is the one spherical thing globe ALREADY does, so the
+//          ladder is not blind to it either. `--sphere-full` runs the whole 248
+//          and the banner prints which of the two is in force, because a filtered
+//          suite reported under an unfiltered name is how this rot starts.
+//   TIMEOUT. A TIMEOUT is no longer scored as a catch. A mutant whose only
+//          non-green result is a suite that did not finish lands in its own
+//          bucket, prints as `TIMEOUT ONLY (not scored as a catch)`, and FAILS the
+//          run -- because a suite that never printed a summary cannot tell you
+//          whether a check failed or whether the mutation just made the sim slow.
+//          The sphere suite additionally gets a generous per-suite timeout (6x its
+//          baseline, floor 300 s) so that a slow mutant is given the chance to go
+//          RED honestly instead of being killed into an ambiguity.
+//
+// BOTH NEW GUARDS WERE BROKEN ON PURPOSE, because this file has no standing to
+// ask that of anyone else otherwise. Measured 2026-08-17, and the temporary edits
+// were reverted and the file checksummed back to the byte afterwards:
+//
+//   the `blocked` guard.  A `blocked: 'tools/verify-sphere.mjs'` was added to one
+//     entry. The run refused before baselining anything -- "FATAL: 1 mutant(s) are
+//     declared blocked on a file that IS PRESENT ... <-- this file exists" -- and
+//     exited 2. Pointed at a path that really is absent
+//     (tools/verify-sphere-refinement-sweep.mjs) the same run printed "blocked
+//     declarations: 1, every named file checked against the disk and still absent"
+//     and exited 0. Both directions, which is what makes it a check and not a
+//     formality.
+//   the TIMEOUT-ONLY bucket.  verify-render and globe were given a 300 ms timeout
+//     and SUITE_ORDER cut to those two, so that ramp-lab-crest -- a mutant this
+//     harness normally reports CAUGHT with ten named failures -- could produce
+//     nothing but kills. It printed "TIMEOUT ONLY (not scored as a catch)", put 0
+//     in the `caught` bucket and 1 in the `TIMEOUT ONLY` bucket, and exited 1.
+//     The identical situation used to print CAUGHT.
+//   the escalation change, in the same pass. With verify-physics alone given a
+//     2 s timeout, manning-exponent read TIMEOUT on its declared suite, escalated
+//     across the whole ladder because a timeout is no longer treated as a
+//     detection, and came back CAUGHT on verify-tide(RED) at 262.0 s -- i.e. the
+//     extra runs bought a real answer where the old code would have stopped at
+//     the ambiguity and called it a catch.
+//
+// A MUTATION OF A SUITE, not of the solver, is on the list for the first time:
+// merian-eigenvalue replaces n(n+1) with n(n+2) in globe's own closed form. Every
+// other entry breaks the subject and asks whether the gate notices; this one
+// breaks the GATE and asks whether it was ever pointing outwards. It is the g x
+// 1.10 test applied to a target instead of to a constant, and it is the only way
+// to find out whether a closed form written beside the code it judges is doing any
+// judging. It goes red by 15.2%, and the measured period does not move at all.
+//
 // THE REPOSITORY IS NEVER WRITTEN TO. Everything happens under os.tmpdir(). Two
 // guards, both able to fail: every write asserts its path is inside the scratch
 // root, and a SHA-256 of every file in src/ and tools/ is taken before and after
 // the run and compared.
+//
+// ONE MUTANT PATCHES src/globe.mjs, WHICH IS ALSO A SUITE. That is not a mistake
+// and it is not circular: the harness copies the whole tree per mutant, so the
+// suite that runs is the mutated one, which is exactly what "does this gate
+// compare itself against itself" requires. It does mean the `globe` suite is both
+// subject and judge for one entry, and that entry's note says so.
 // ---------------------------------------------------------------------------
 
 import { spawn } from 'node:child_process';
@@ -192,6 +369,15 @@ const REPO = path.resolve(HERE, '..');
 //     headlandBay       9 checks   289.6 s
 //     submarineCanyon   6 checks   333.2 s
 //
+// RE-MEASURED 2026-08-17, because every other count in this header had drifted
+// and this one had no reason to be exempt: all eight CHECK COUNTS are unchanged
+// and still sum to 39. The TIMES are lower -- the three cheap cases 1.7 / 16.1 /
+// 26.2 s run one at a time, the five expensive ones 42.3 / 59.9 / 119.2 / 191.3 /
+// 223.3 s run five at a time -- which is the table above behaving exactly as its
+// own caveat says it will, an upper bound measured with eight processes in flight.
+// So this is the one count in the file that was still true, and it is now true
+// with a date on it.
+//
 // Run whole that is a quarter of an hour, which no mutant can afford to pay
 // twenty-four times over. So waves.mjs is entered as one suite PER CASE and only
 // the three cheap ones are wired up. The five expensive cases are deliberately
@@ -203,18 +389,106 @@ const REPO = path.resolve(HERE, '..');
 // failing; the runner reports that as CRASH, and the case names below are the
 // ones in its own CASES list.
 // ---------------------------------------------------------------------------
+//
+// THREE SUITES JOINED THE LIST ON 2026-08-17, and one of them is not in tools/.
+// The check counts below are measured BY THIS HARNESS, in the tree this harness
+// builds, and that is not always the same number the repository prints. Where it
+// differs the difference is stated, because "104 checks" sat in this comment
+// while the file carried 115 and nothing in a run contradicted it.
+//
+//   verify-render   tools/verify-render.mjs, 115 checks, 1.0 s measured alone.
+//                   The renderer had NO automated coverage at all before that
+//                   file landed: src/render.mjs's exported rampSymmetry() had no
+//                   caller anywhere in the tree. It carried 104 checks the day it
+//                   was wired up here and this comment went on saying so.
+//   globe           src/globe.mjs, 10.1 s. THE COUNT IS NOT WRITTEN DOWN, and
+//                   this is the entry that shows why. Two separate reasons:
+//                   (a) globe prints a DIFFERENT total here than in the
+//                   repository, by construction and not by drift -- its last
+//                   block reads index.html for the page defaults, the scratch
+//                   tree holds src/ and tools/ only, and globe SKIPs those checks
+//                   by name rather than passing them. The stable statement is the
+//                   IDENTITY: counted-here + SKIPPED == counted-in-the-repository.
+//                   Measured 2026-08-17 17:15, that was 110 + 6 == 116.
+//                   (b) src/globe.mjs was being edited by another session while
+//                   this paragraph was written -- it grew by 9910 bytes at
+//                   17:08 and its scratch total went 108 -> 110 inside one hour.
+//                   A total written here would have been wrong before the file
+//                   was saved. The run baselines it and prints it; read that.
+//                   Its checks live in src/ behind a basename guard rather than
+//                   in tools/, which its own header admits and asks to have
+//                   moved. They are wired up here in the place they actually are,
+//                   because a check in an awkward directory is still a check.
+//   sphere          tools/verify-sphere.mjs, FILTERED -- see below. 192 checks in
+//                   46.0 s against 248 in 237.2 s for the whole file.
+//
+// THE SPHERE FILTER, stated where it is applied. `sphere` runs
+//   --only metric,lake,mass,coriolis,curvature,periodic,finite,baseline
+// i.e. every section except 4, the closed-form Merian oscillation. Measured alone
+// on this machine, section by section: metric 0.1 s / 41, lake 23.0 / 52, mass
+// 17.8 / 4, MERIAN 185.9 / 45, coriolis 0.3 / 11, curvature 1.5 / 9, periodic
+// 2.5 / 8, finite 0.2 / 7, baseline 0.1 / 4. Section 4 is 79% of the clock. What
+// justifies dropping it is not that it is expensive but that it is REDUNDANT
+// HERE: globe section 8 is a closed-form spherical mode period too, it is on the
+// ladder, and it costs 10 s. And the substitution was MEASURED rather than
+// argued -- all fifteen spherical mutants were run against the full 248 and
+// against the filtered 192, and the verdict is identical on every one.
+// `--sphere-full` swaps the filter out; the banner prints which is in force.
+//
+// A FILTERED SUITE IS STILL A HOLE, on the same terms as the five absent waves
+// cases above: a mutation only section 4 could see would read SURVIVED here. The
+// difference is that this one has been measured against its own full version once
+// and can be re-measured with one flag, which is what makes the claim checkable
+// rather than a promise.
+//
+// `globe` and `sphere` are the only two suites in this list that construct a
+// spherical simulation, and until `sphere` was wired in on 2026-08-17 `globe` was
+// the only one -- which is what put ten false "declared survivor" entries in the
+// table below. Every mutation that lives behind `if (sph)` or inside
+// sphericalGeometry() is invisible to the other seven BY CONSTRUCTION, not by
+// weakness, and escalation to them is a formality that the runs below nevertheless
+// pay for in full, because "survived" is a strong claim and it should cost the
+// harness something.
+const SPHERE_SECTIONS = 'metric,lake,mass,coriolis,curvature,periodic,finite,baseline';
+/** --sphere-full: run tools/verify-sphere.mjs whole. Read here so SUITES is a const. */
+const SPHERE_FULL = process.argv.includes('--sphere-full');
 const SUITES = {
+  'verify-render': { file: 'tools/verify-render.mjs' },
   'verify-physics': { file: 'tools/verify-physics.mjs' },
+  'globe': { file: 'src/globe.mjs' },
   'waves:damping': { file: 'tools/waves.mjs', args: ['damping'] },
   'waves:fringingReef': { file: 'tools/waves.mjs', args: ['fringingReef'] },
   'waves:snell': { file: 'tools/waves.mjs', args: ['snell'] },
+  // TIMEOUT IS NOT A VERDICT HERE, so this suite is given room to fail honestly.
+  // The generic rule -- 3x baseline, floor 90 s -- would give the filtered sphere
+  // 138 s, and a mutant that merely made the sim slow would be killed into an
+  // ambiguity instead of printing "n FAILURES". Measured, mutated full-suite runs
+  // cost 217-237 s against 237.2 s pristine, i.e. a broken metric barely moves the
+  // clock; 6x with a 300 s floor is therefore slack that costs nothing on a green
+  // run and buys a real answer on a red one.
+  'sphere': {
+    file: 'tools/verify-sphere.mjs',
+    args: SPHERE_FULL ? [] : ['--only', SPHERE_SECTIONS],
+    timeoutMul: 6,
+    timeoutFloor: 300_000,
+  },
   'verify': { file: 'tools/verify.mjs' },
   'verify-tide': { file: 'tools/verify-tide.mjs' },
 };
 // Cheapest first: escalation walks this order, so a survivor pays for the fast
-// suites before it pays for verify-tide.
-const SUITE_ORDER = ['verify-physics', 'waves:damping', 'waves:fringingReef',
-  'waves:snell', 'verify', 'verify-tide'];
+// suites before it pays for verify-tide. Measured 2026-08-17 on the 16-core
+// machine this was extended on, each suite run ALONE and sequentially:
+// verify-render 1.0 s, waves:damping 1.7 s, verify-physics 6.9 s, globe 10.1 s,
+// waves:fringingReef 16.1 s, waves:snell 26.2 s, sphere 46.0 s, verify 71.5 s,
+// verify-tide 260.0 s (and tools/verify-sphere.mjs UNFILTERED, which is not on
+// this ladder, 237.2 s). VERIFY-TIDE IS NOT 343.3 s ANY MORE, which is what four
+// other comments in this file still said when this list was rewritten: measured
+// 260.0 s alone, and 259.2 / 259.6 / 259.9 s in the concurrent baseline of three
+// separate full runs. The order below follows those costs; the run re-baselines
+// them anyway and prints the table, and the numbers there run slightly high
+// because the baseline runs nine suites at once and this list did not.
+const SUITE_ORDER = ['verify-render', 'waves:damping', 'verify-physics', 'globe',
+  'waves:fringingReef', 'waves:snell', 'sphere', 'verify', 'verify-tide'];
 
 // ---------------------------------------------------------------------------
 // THE MUTANTS.
@@ -442,11 +716,21 @@ const MUTANTS = [
     expect: 'verify-physics section 1, all seven checks -- the state simply does not '
       + 'turn',
     review: 'GREEN at the review',
+    found: '2026-08-17: THIS ANCHOR WAS STALE and the harness was exiting 1 on it. '
+      + 'The spherical port (f3d1351) gave the sphere its own Coriolis block -- '
+      + 'f = 2 omega sin(phi) plus the metric curvature term -- and turned the Cartesian '
+      + 'one into the `else` of it, so `if (this.coriolis) {` stopped existing and this '
+      + 'mutant reported ANCHOR-ERROR along with three others. Re-anchored on the else '
+      + 'branch. WHAT THAT MEANS FOR THE COVERAGE is the part worth writing down: this '
+      + 'mutant now breaks the CARTESIAN rotation only. The spherical Coriolis is a '
+      + 'separate block, and a mutant that reads CAUGHT while covering half of what its '
+      + 'name says is the more dangerous of the two failure modes. curvature-off and '
+      + 'f-constant below are the two halves it no longer reaches',
     suites: ['verify-physics'],
     patches: [{
       file: 'src/swe.mjs',
-      find: '    if (this.coriolis) {',
-      repl: '    if (false && this.coriolis) {   // MUTANT: Coriolis removed',
+      find: '    } else if (this.coriolis) {',
+      repl: '    } else if (false && this.coriolis) {   // MUTANT: Cartesian Coriolis removed',
     }],
   },
   {
@@ -569,10 +853,15 @@ const MUTANTS = [
     expect: 'verify.mjs section 1, lake at rest -- the interface correction and this '
       + 'term have to cancel each other and one of them is now missing',
     review: 'RED at the review: 10 failures',
+    found: '2026-08-17: STALE ANCHOR, repaired. The scalar divisors dx and dy in this line '
+      + 'became the per-row bedDiv0/bedDiv1 of the spherical port. Zeroing the term still '
+      + 'removes exactly the Cartesian bed source and, on a sphere, leaves the geometric '
+      + 'source on the line below it alone -- which is the right scope for a mutant named '
+      + 'after the bed, and is why this one was not widened to cover both',
     suites: ['verify'],
     patches: [{
       file: 'src/swe.mjs',
-      find: '            const term = -G * 0.5 * (hP + hM) * db / (d === 0 ? dx : dy);',
+      find: '            const term = -G * 0.5 * (hP + hM) * db / (d === 0 ? bedDiv0 : bedDiv1);',
       repl: '            const term = 0;   // MUTANT: bed slope source removed',
     }],
   },
@@ -664,8 +953,21 @@ const MUTANTS = [
     suites: ['waves:snell'],
     patches: [{
       file: 'src/swe.mjs',
-      find: '        const inv = th / dy;',
-      repl: '        const inv = 0;   // MUTANT: the y sweep contributes nothing',
+      // STALE 2026-08-17 and repaired: the single `const inv = th / dy;` became TWO
+      // divisors in the spherical port, because the two cells sharing a zonal face
+      // lie in different ROWS and on a sphere different rows have different areas.
+      // Zeroing both keeps this mutant's whole point -- mass is still conserved
+      // exactly, both sides of the face receiving the same zero -- which zeroing
+      // only one of them would destroy, turning a coupling mutant into a mass
+      // leak that any volume check would catch for the wrong reason.
+      find: L(
+        '        const invL = th / dyRowN[j];',
+        '        const invR = th / dyRowS[j + 1];',
+      ),
+      repl: L(
+        '        const invL = 0;   // MUTANT: the y sweep contributes nothing',
+        '        const invR = 0;',
+      ),
     }],
   },
   {
@@ -715,9 +1017,9 @@ const MUTANTS = [
   // mutation verify-tide is not the cheapest suite that might catch it, it is
   // the ONLY suite that can, and declaring one of these anywhere else would be
   // declaring a suite that cannot see the file. It is also why they are the
-  // expensive entries in this list: verify-tide is 343.3 s measured alone on
-  // this machine against 8.2 s for verify-physics, and there is no cheaper aim
-  // to take.
+  // expensive entries in this list: verify-tide is 260.0 s measured alone on
+  // this machine (343.3 s when this paragraph was written) against 6.9 s for
+  // verify-physics, and there is no cheaper aim to take.
   //
   // THE n/N IN THE `found` NOTES BELOW IS FROM THE RUN THAT MEASURED IT, and
   // BOTH halves of it move. verify-physics went 43 -> 47 -> 75 checks over the
@@ -864,8 +1166,8 @@ const MUTANTS = [
     suites: ['verify-physics'],
     patches: [{
       file: 'src/swe.mjs',
-      find: '        const s = (u + c) / dx + (v + c) / dy;',
-      repl: '        const s = Math.max((u + c) / dx, (v + c) / dy);   // MUTANT: 2D CFL sum -> max',
+      find: '        const s = (u + c) / dxRow[j] + (v + c) / dyCFL[j];',
+      repl: '        const s = Math.max((u + c) / dxRow[j], (v + c) / dyCFL[j]);   // MUTANT: 2D CFL sum -> max',
     }],
   },
   {
@@ -1315,6 +1617,930 @@ const MUTANTS = [
       repl: '    const hStar = ((cL + cR) / 2 + (uL - uR) / 2) ** 2 / G;   // MUTANT: not the two-rarefaction h*',
     }],
   },
+
+  // =========================================================================
+  // THE SPHERE, and the suite this file spent three days saying did not exist.
+  //
+  // Commit f3d1351 put shallow water on a rotating sphere: src/geometry.mjs
+  // supplies per-row metric arrays and src/swe.mjs consumes them. Its header
+  // names three choices as non-negotiable and records that a FLAT-BED resting
+  // ocean cannot see two of them. The mutants that break those three are here,
+  // with five more pieces of the port that nothing above reaches at all, the two
+  // alternatives the same header declares harmless, three constant-scaling
+  // mutants that exist to test each other, and one mutation of a SUITE rather
+  // than of the solver.
+  //
+  // THE STATE OF PLAY, AND THE CORRECTION THAT REPLACED IT.
+  //
+  // WHAT THIS BLOCK USED TO SAY, verbatim in substance: the spherical solver has
+  // exactly ONE gate anywhere in this repository -- section 8 of src/globe.mjs, a
+  // closed-form mode period on a FLAT bed at ORDER 2 with omega = 0 -- and
+  // tools/verify-sphere.mjs "was specified in detail and measured in advance ...
+  // and then never written". TEN entries below were declared survivors on that
+  // basis and EIGHT carried `blocked: 'tools/verify-sphere.mjs'`.
+  //
+  // WHAT IS TRUE, measured 2026-08-17 in a scratch tree: tools/verify-sphere.mjs
+  // exists, is 1541 lines, and is green at 248/248 in 237.2 s. It carries every
+  // check the ten declarations said was missing and several they did not think to
+  // ask for -- an area identity against a locally declared R_REF, per-band sums, a
+  // resting lake over relief and over a piercing island at four resolutions and at
+  // BOTH orders, f row-by-row against 2*Omega*sin(phi) at tolerance 1e-14, an
+  // inertial oscillation measured by the flow itself at two latitudes, a 50 m/s
+  // zonal jet at four latitudes with the curvature term isolated, and a
+  // rotate-the-planet-and-compare test across the antimeridian. And it carries its
+  // own refutations, so its bounds are shown to have teeth.
+  //
+  // ALL TEN DECLARATIONS WERE FALSE. Every one of the fifteen spherical mutants
+  // below is CAUGHT by it -- the ten that were declared survivors and the five
+  // globe already caught. The per-mutant numbers are in each `found` note, against
+  // the full 248 and against the filtered 192 the ladder actually runs, and each
+  // one names WHICH checks fire, because "caught" without "by what" is the exact
+  // sentence that rotted here: it is unfalsifiable prose, and the eight `blocked`
+  // lines proved that prose in this file does not get re-read.
+  //
+  // THE FIVE THAT ONE FLAT-BED GATE COULD NOT SEE are still worth naming, because
+  // they are why globe alone was never sufficient and why every entry below now
+  // declares TWO suites. area-naive-cos is a latitude-independent factor that
+  // divides out of any resting balance and needs a metric identity with no
+  // simulation in it. geo-hcell-squared and bedphi-Rdphi are arithmetically
+  // identical to the shipped code on a flat bed and need RELIEF at order 2.
+  // bed-guard-order2 is arithmetically identical at order 2 and needs an order-1
+  // run. curvature-off and f-constant and omega-div1.1-alone are exactly zero
+  // wherever u = 0 or omega = 0, which is every case globe has. None of that was
+  // a tolerance to tighten, and none of it is expensive -- verify-sphere gets all
+  // of it for 46 s of the 237 with section 4 filtered out.
+  //
+  // ONE FINDING BEFORE THE LIST, because it corrects the source file this list is
+  // derived from. src/geometry.mjs says the well-balancing identity "hangs on
+  // phi_C being the ARITHMETIC mean of the two face latitudes" and names the
+  // area-bisecting latitude as the plausible mistake that breaks it. Measured, a
+  // resting lake CANNOT see that substitution at all -- 8.2189e-14 m/s against a
+  // baseline of 7.7132e-14 -- and the algebra says why: with a = ly_N/A and
+  // b = ly_S/A the resting residual is
+  //     G/4 [ -2a hP^2 + 2b hM^2 - (hM^2 - hP^2)(a + b) + (a - b)(hP^2 + hM^2) ],
+  // which is identically zero in a and b. The cancellation needs geoCoef and
+  // bedPhi to be built out of the SAME face lengths and area the flux divisors
+  // use, and it does not care what latitude those lengths were evaluated at. phi_C
+  // enters only through A (a per-row scale, which cancels), tan(phi) (a force that
+  // is zero at rest) and f (zero at omega = 0). What the area-bisecting latitude
+  // actually breaks is the METRIC -- the area identity goes to 2.0321e-4 -- which
+  // is a different check, and phic-area-bisecting below is caught by a different
+  // thing than the header would predict.
+  //
+  // TWO SETS OF NUMBERS APPEAR IN THE `found` NOTES BELOW, and they are not the
+  // same kind of thing. Keeping them apart is the point of this paragraph.
+  //
+  //   THE SCRATCH PROBE, quoted as "resting ocean at order 2: flat ... uneven ..."
+  //   and dated 2026-08-17. A resting ocean, 180 x 90 (2 deg), 400 steps, omega 0,
+  //   manning 0, cfl 0.45, over three beds -- flat 4000 m; uneven 1800-2500 m
+  //   (three lobes in longitude, two in latitude); the same uneven bed with a cone
+  //   that pierces the surface and leaves 4 dry cells -- plus a +-80 deg capped
+  //   variant, at BOTH orders, with the area identity against a locally declared
+  //   R_REF. It is a SCRATCH INSTRUMENT AND NOT A GATE, it is not in the
+  //   repository, and it is what the false declarations were built on. It is kept
+  //   because the figures are real and they say how large each effect is, which a
+  //   PASS/FAIL line does not. Its baseline, max speed over the grid after 400
+  //   steps:
+  //
+  //     order 2   flat 7.7132e-14   uneven 6.2598e-13   island 6.2598e-13   cap80 1.2030e-12
+  //     order 1   flat 6.2601e-14   uneven 1.4033e-13   island 1.4033e-13   cap80 2.0786e-13
+  //     area identity at 1 deg  +1.2253e-16 relative      band 30..60 deg  +6.6954e-16
+  //
+  //   Volume drift is EXACTLY zero in all eight, and |eta| is measured over WET
+  //   cells only: a dry cell's surface elevation IS its bed, which stands above
+  //   the sea beside an island, and including it would swamp the metric with 211 m
+  //   of something that is not an error.
+  //
+  //   THE SUITE, quoted as "CAUGHT by sphere, n of 248" with the failing check
+  //   named and its got/want. That is a shipped gate going red in a scratch copy
+  //   of the tree, it is reproducible with one command, and it is the only half of
+  //   each note that is EVIDENCE. Where the two disagree about how alarming a
+  //   mutation is, the suite wins.
+  //
+  // THE 248 AND THE 192. Each note gives both: n/248 is the whole of
+  // tools/verify-sphere.mjs, n/192 is the filtered invocation the ladder runs
+  // (every section but 4, see SUITES). Fifteen mutants were measured both ways in
+  // one pass; the verdict agrees on all fifteen, and the counts differ only
+  // because section 4 and its eleven baseline rows are absent. Both are recorded
+  // so that the claim "the filter loses nothing" is a number somebody can check
+  // rather than a decision somebody made.
+  //
+  // WHAT REPLACED THE OLD ESCALATION EXPERIMENT. This block used to carry a
+  // paragraph justifying "survives everything" from a 1391 s run of every known
+  // survivor against all eight Cartesian suites -- 124 mutated runs to establish
+  // that suites which never construct a spherical simulation cannot see spherical
+  // mutations. That is still true and it is no longer load-bearing: there is a
+  // spherical suite now, every entry below declares it, and the answer is
+  // re-measured on every run at 46 s apiece instead of argued from a dated
+  // experiment. The figures that experiment quoted (verify-render 104/104, globe
+  // 60/60) have both since gone stale, which is its own argument for measuring
+  // rather than quoting.
+  // =========================================================================
+  {
+    id: 'area-naive-cos',
+    name: 'cell area -> R^2 cos(phi) dlam dphi',
+    breaks: 'the metric itself. Every cell is too big by 1/sinc(dphi/2) -- 1.27e-5 at '
+      + '1 degree, 2.0e-4 at 4 -- so every area, every effective divisor and the total '
+      + 'surface of the planet are wrong by a fixed factor, and refinement does not '
+      + 'rescue it because it is a bias and not a truncation',
+    expect: 'NOTHING THAT EXISTS, and this is the one spherical mutation whose blindness '
+      + 'was predicted before it was measured. src/geometry.mjs: the naive area is the '
+      + 'exact area times a factor INDEPENDENT OF LATITUDE, so it scales dxRow, dyRow and '
+      + 'bedPhi up and geoCoef down, the flux divergence and the geometric source move '
+      + 'together, and the resting balance holds identically. It is the g x 1.10 disease '
+      + 'in new clothes -- a wrong constant that every relative check divides out. What '
+      + 'catches it is an AREA IDENTITY against an independently declared radius, a check '
+      + 'with no simulation in it at all. That check now exists -- verify-sphere section '
+      + '1b -- and the prediction that nothing else would catch it is exactly right',
+    review: 'not on any reviewer\'s list. Measured in the session that wrote the sphere, '
+      + 'and recorded there as surviving every resting test at every resolution on every '
+      + 'bed',
+    found: '2026-08-17, re-measured, and the prediction holds exactly. Resting ocean at '
+      + 'order 2: flat 9.2272e-14 (baseline 7.7132e-14), uneven 5.6952e-13 (6.2598e-13), '
+      + 'island 5.6952e-13, cap80 1.1671e-12 (1.2030e-12) -- three of the four AT OR '
+      + 'BELOW their own baseline, which is the signature of a mutation that is not '
+      + 'perturbing the balance but rescaling both sides of it. Order 1 the same. Where '
+      + 'it shows is the area identity, and it shows enormously: the sum of cell areas '
+      + 'against 4 pi R_REF^2 goes +1.2253e-16 -> +1.2693e-5 at 1 degree, with the '
+      + '30..60 deg band at the same +1.2693e-5 -- ELEVEN ORDERS of margin, a check that '
+      + 'would need no tolerance argument at all, only a comparison. globe GREEN, every '
+      + 'Cartesian suite green on escalation. '
+      + 'CAUGHT BY sphere, 42 of 248 (30 of 192 filtered), and this entry was a DECLARED '
+      + 'SURVIVOR blocked on a file that already existed -- see the block header. WHICH '
+      + 'CHECKS: section 1b, the area identity against a locally declared R_REF, at every '
+      + 'resolution -- "whole sphere at 6 deg got 5.1030e+14 want 5.1006e+14 rel 0.045707% '
+      + 'tol 1.00e-12%", and the same at 4/3/2/1 deg down to 0.001269%, plus the three '
+      + 'capped variants; section 1c, the per-band sums, "band 30..60 deg" at 0.001269% '
+      + 'against a 1e-11% tolerance; two identity lines in 1f (geoCoef == -tan(phi_C)/4R '
+      + 'and bedPhi == 2R tan(dphi/2), both to 2.03e-4 against limits of 1e-13 and 1e-14); '
+      + 'and 28 rows of the section 9 baseline, which records the area residual and its '
+      + 'round-off bound. NOT ONE resting-lake line fires, at either order, on any of the '
+      + 'four beds -- which is the prediction above, confirmed by a shipped gate rather '
+      + 'than by a scratch probe. Nine to ten orders of margin on every failing line: this '
+      + 'is the cheapest check on the list and it needs no tolerance argument, only a '
+      + 'comparison',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '    let A = 2 * R * R * dlam * cosLat(pC) * Math.sin(half);',
+      repl: '    let A = R * R * dlam * cosLat(pC) * (pN - pS);   // MUTANT: naive area = exact / sinc(dphi/2)',
+    }],
+  },
+  {
+    id: 'geo-hcell-squared',
+    name: 'geometric source on 2 h_cell^2, not h_N^2 + h_S^2',
+    breaks: 'the well-balanced form of the spherical curvature source. The two agree '
+      + 'EXACTLY wherever the reconstructed face depths are equal -- every flat bed, and '
+      + 'every first-order run anywhere -- and over a slope they differ by the square of '
+      + 'the reconstruction. What is left is a persistent along-slope current on every '
+      + 'shelf break and seamount flank and nowhere else, which src/geometry.mjs calls '
+      + 'the hardest artefact here to disbelieve, because a slope current at the shelf '
+      + 'break is what the real ocean has',
+    expect: 'a spherical lake at rest over an UNEVEN bed at ORDER 2. Nothing else can '
+      + 'see it, and not because of tolerances: elsewhere the mutant is the shipped '
+      + 'expression bit for bit',
+    review: 'measured in the sphere session at 7.463e-2 m/s on the uneven bed and on the '
+      + 'island, against 6.7e-13 clean, and at 7.713e-14 -- unchanged -- on the flat bed',
+    found: '2026-08-17: the blindness is confirmed and it is two-sided, which is SHARPER '
+      + 'than the note it came from. Order 2: flat 7.7132e-14, identical to baseline to '
+      + 'every digit; uneven 3.2027e-4; cap80 1.6473e-3; island 1.0086e-1 m/s with '
+      + '0.5067 m of spurious surface. ORDER 1: 1.4032e-13 on the uneven bed against a '
+      + 'baseline of 1.4033e-13 -- INERT, because at first order sE and sB are zero, so '
+      + 'hP = hM = h[k] and hP^2 + hM^2 IS 2 h[k]^2. So this mutation needs an uneven bed '
+      + 'AND second order, and the order-1 run that bed-guard-order2 requires would '
+      + 'report it clean. globe GREEN: its only spherical case is an aquaplanet of '
+      + 'uniform 4000 m depth, where the difference is the square of a 1 m mode amplitude '
+      + 'against 2h^2 = 3.2e7, about 1e-8 relative, which no 1% tolerance can see. '
+      + 'CAUGHT BY sphere, 36 of 248 (36 of 192 filtered) -- a declared survivor blocked '
+      + 'on a file that already existed. WHICH CHECKS: section 2b, the resting lake, and '
+      + 'ONLY on the beds with relief, exactly as predicted -- "uneven 6deg: max speed got '
+      + '0.203569 limit 2.2370e-10", "piercing 6deg: max |eta| got 8.551786 limit '
+      + '9.2764e-11", the same pairs at 4, 3 and 2 deg down to 0.0229 m/s -- plus 18 rows '
+      + 'of the section 9 baseline carrying those same cases. The FLAT-bed lines stay '
+      + 'GREEN at every resolution and so does every ORDER 1 line, which is the two-sided '
+      + 'blindness the probe measured, now confirmed by a shipped gate rather than by a '
+      + 'scratch script: at first order sE and sB are zero, hP = hM = h[k], and '
+      + 'hP^2 + hM^2 IS 2 h[k]^2. That is why this mutant and bed-guard-order2 need '
+      + 'OPPOSITE orders, and why a suite has to run both rather than pick one',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '              if (sph) rhv[k] += gc * G * (hP * hP + hM * hM);',
+      repl: '              if (sph) rhv[k] += gc * G * 2 * h[k] * h[k];   // MUTANT: cell-centred h^2',
+    }],
+  },
+  {
+    id: 'geo-source-deleted',
+    name: 'the spherical geometric source removed entirely',
+    breaks: 'the curvature term that absorbs the leftover of a hydrostatic pressure that '
+      + 'does not cancel, because a cell\'s north and south faces have different lengths. '
+      + 'The leftover is not small: at h = 4000 m and 45 degrees it is 12.3 m/s^2, larger '
+      + 'than g, and the whole ocean drains to the equator in minutes',
+    expect: 'anything spherical at all, on any bed, at any order. This is the one '
+      + 'spherical mutation a flat bed catches, and the reason a flat-bed gate looked '
+      + 'sufficient for a while',
+    review: 'measured in the sphere session at 3.088e+02 m/s on all three beds',
+    found: '2026-08-17: 2.5990e+2 m/s on the FLAT bed at order 2 with 7.3e+3 m of '
+      + 'spurious elevation, 2.0340e+2 uneven, 4.5040e+1 capped, and the same again at '
+      + 'order 1 (2.4608e+2 flat). CAUGHT by globe, 5 checks: the mode period comes back '
+      + 'NaN at both 6 and 4 degrees against a closed form of 82512.836103 s, and both '
+      + 'sign checks fall with it. ALSO CAUGHT BY sphere, and this is the calibration '
+      + 'line for the whole spherical block -- 121 of 248 (69 of 192 filtered), the '
+      + 'largest count on the list after ycoef-single-divisor, because a mutation that '
+      + 'shows on ANY bed at ANY order shows in nearly every section at once: "flat 6deg: '
+      + 'max speed got 586.493520 limit 1.4996e-10", 42252 m of spurious elevation on the '
+      + 'flat bed, volume drift NaN on the uneven one, and 40 baseline rows behind them. '
+      + 'A mutant caught by 121 checks and one caught by 3 are both CAUGHT; the count is '
+      + 'the only thing that says which of the two the suite is aimed at. Volume drift '
+      + 'stays at 1e-16 in the SCRATCH PROBE throughout, which is the '
+      + 'part worth noticing -- the mutant conserves mass perfectly while destroying the '
+      + 'momentum balance, so a conservation check on its own would have passed it',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '              if (sph) rhv[k] += gc * G * (hP * hP + hM * hM);',
+      repl: '              if (false) rhv[k] += gc * G * (hP * hP + hM * hM);   // MUTANT: geometric source deleted',
+    }],
+  },
+  {
+    id: 'bedphi-Rdphi',
+    name: 'bedPhi 2A/(ly_N + ly_S) -> R dphi',
+    breaks: 'the meridional divisor of the CENTRED BED TERM. R dphi is the obvious thing '
+      + 'to write and it is the true meridional cell height; it is still wrong, because '
+      + 'the two pressure fluxes this term has to cancel against are weighted by ly_N and '
+      + 'ly_S, so the bed term must be divided by their mean and not by the arc it spans. '
+      + 'The two agree only where ly_N = ly_S, which is the equator and nowhere else',
+    expect: 'a spherical lake at rest over an UNEVEN bed at ORDER 2, exactly as '
+      + 'geo-hcell-squared: with no bed slope there is no bed term to mis-divide',
+    review: 'measured in the sphere session at 5.877e-03 uneven and 1.302e-02 island '
+      + 'against a flat bed at 7.713e-14, unchanged to every digit',
+    found: '2026-08-17: 4.6646e-4 m/s uneven, 4.0013e-3 capped, 9.0574e-3 island with '
+      + '0.0599 m of spurious surface, against a flat bed at 7.7132e-14 which is the '
+      + 'baseline to every digit. Smaller than the sphere session\'s figures because this '
+      + 'probe\'s bed is smoother, not because the mutation is weaker: it scales with '
+      + 'relief, which is the point. AND IT IS INERT AT ORDER 1 -- 1.4033e-13 against a '
+      + 'baseline of 1.4033e-13 -- because at first order sB = 0, so db = 0 and the term '
+      + 'this divisor divides is identically zero. bedphi-Rdphi and bed-guard-order2 '
+      + 'therefore need OPPOSITE orders, and a suite that ran only one of the two would '
+      + 'declare the metric verified while blind to the other. globe GREEN. '
+      + 'CAUGHT BY sphere, 37 of 248 (37 of 192 filtered) -- a declared survivor blocked '
+      + 'on a file that already existed. WHICH CHECKS, and the first one is a surprise '
+      + 'worth keeping: the sharpest line is not in the lake at all, it is the METRIC '
+      + 'identity, section 1f, "bedPhi == 2 R tan(dphi/2), every interior row -- got '
+      + '4.0619e-4 limit 1.0000e-14", i.e. a closed-form statement about the divisor with '
+      + 'no simulation in it and ten orders of margin. R dphi and 2 R tan(dphi/2) differ '
+      + 'in the third term of the tangent series, which is the whole mutation, and a '
+      + 'still grid can see it. The other 36 are the ones the note above predicted: '
+      + 'section 2b over relief, "uneven 6deg: max speed got 0.074581", "piercing 6deg: '
+      + 'max |eta| got 2.280334", down to 0.0071 m/s at 3 deg, plus 18 baseline rows. '
+      + 'FLAT stays green and ORDER 1 stays green, as predicted -- at first order sB = 0 '
+      + 'and the term this divisor divides is identically zero',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '    g.bedPhi[j] = (g.lyN[j] + g.lyS[j]) > 0 ? 2 * A / (g.lyN[j] + g.lyS[j]) : Infinity;',
+      repl: '    g.bedPhi[j] = R * dphi;   // MUTANT: the true cell height, which is not the right divisor',
+    }],
+  },
+  {
+    id: 'bed-guard-order2',
+    name: "the bed/geo guard reverts to 'order >= 2'",
+    breaks: 'nothing whatever at second order, and everything at first. On a sphere the '
+      + 'centred bed block must run at EVERY order, because the geometric source lives '
+      + 'inside it and that source is not zero when the slopes are: at order 1, hP = hM = '
+      + 'h and -(tan phi / 4R) G 2h^2 is 3.1e-3 m/s^2 at 45 degrees, i.e. 268 m/s per '
+      + 'day. Deleting `|| sph` is the single most plausible way to get this port wrong, '
+      + 'because the Cartesian guard it restores is CORRECT in Cartesian and the comment '
+      + 'beside it explains why',
+    expect: 'an ORDER 1 spherical run, and nothing else anywhere. At order 2 the patched '
+      + 'condition is the same condition',
+    review: 'measured in the sphere session as passing at order 2 and 2.799e+02 m/s at '
+      + 'ORDER 1 -- the only line in that table whose verdict depends on the order',
+    found: '2026-08-17: at order 2 it reproduces the baseline to every digit on all four '
+      + 'cases (7.7132e-14 flat, 6.2598e-13 uneven, 1.2030e-12 cap80, 6.2598e-13 island). '
+      + 'So it is not merely undetected at order 2, it is INERT there, and no tolerance '
+      + 'could ever catch it. At ORDER 1: 2.4608e+2 m/s flat, 1.9181e+2 uneven, 3.7908e+1 '
+      + 'capped, 6.2e+3 m of spurious elevation -- the same catastrophe as '
+      + 'geo-source-deleted, which is exactly what it becomes at first order. globe '
+      + 'GREEN, because measureModePeriod defaults to order 2 and section 8 never asks '
+      + 'for anything else. '
+      + 'CAUGHT BY sphere, and it is the NARROWEST catch in the whole spherical block: 4 '
+      + 'of 248, 4 of 192, and all four are the SAME CASE seen twice -- "uneven 2deg '
+      + 'order1: max speed got 309.562100 limit 8.0216e-11" and "max |eta| got '
+      + '8515.222514" in section 2, and the two matching rows in the section 9 baseline, '
+      + 'where the recorded value is 3.0630e-13 and the ratio is 1.0e+15. Section 2 runs '
+      + 'ONE order-1 case out of its whole matrix, and that one case is the entire margin '
+      + 'between this mutant being caught and this mutant being invisible. Two things '
+      + 'follow and both are worth writing down: the declaration that used to sit here -- '
+      + '"the gate that catches this is one extra ARGUMENT, not one extra idea" -- was '
+      + 'exactly right, and it was also already implemented; and a suite that dropped its '
+      + 'single order-1 row for being redundant would silently give this mutant back, '
+      + 'which is what a 4-of-248 catch is warning about',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '    if (this.order >= 2 || sph) {',
+      repl: '    if (this.order >= 2) {   // MUTANT: the spherical half of the guard deleted',
+    }],
+  },
+  {
+    id: 'phic-area-bisecting',
+    name: 'phi_C -> asin((sin phi_N + sin phi_S)/2)',
+    breaks: 'the cell-centre latitude, replacing the arithmetic mean of the two face '
+      + 'latitudes with the AREA-BISECTING latitude -- the one that halves the cell. It '
+      + 'looks more principled, and src/geometry.mjs names it by name as the plausible '
+      + 'mistake',
+    expect: 'src/geometry.mjs says this breaks the well-balancing identity. IT DOES NOT, '
+      + 'and the measurement below is a correction to that file rather than a result '
+      + 'about it. The cancellation holds for ANY phi_C, because geoCoef and bedPhi are '
+      + 'built out of the same face lengths and area the flux divisors use; the algebra '
+      + 'is written out in the block header above. phi_C enters the resting state only '
+      + 'through A, which cancels. What it does break is the METRIC, so the check that '
+      + 'ought to catch it is the area identity -- and specifically the PER-BAND one, '
+      + 'because the error is not a constant factor',
+    review: 'not measured by anyone before this. It is on the list because '
+      + 'src/geometry.mjs singles it out',
+    found: '2026-08-17, and it changed the story twice. Resting ocean: 8.2189e-14 flat, '
+      + '7.2599e-13 uneven, 1.1051e-12 capped, 7.2599e-13 island -- all at baseline, so '
+      + 'the lake at rest is blind to it. The metric is where it shows: the area identity '
+      + 'goes to +2.0321e-4 at 1 degree, 16x the naive-area error, and the 30..60 deg '
+      + 'band reads +4.1774e-5, DIFFERENT from the total -- which is the signature of a '
+      + 'metric mis-distributed by row rather than wrong by a factor, and the reason both '
+      + 'checks were specified. CAUGHT by globe, 4 checks, and WHICH four is the '
+      + 'interesting part: two are the renderer agreeing with the metric ("row centres '
+      + 'agree with geometry.mjs phiC", worst 0.6212 deg; "sampled point is inside the '
+      + 'chosen cell (latitude)", worst 2.1212 deg against a half-cell of 1.5) and two '
+      + 'are the merian SIGN checks ("n = 2 at 6 deg is LATE, not early" at +0.9055%, and '
+      + '+0.4542% at 4 deg). The 1% MAGNITUDE tolerance did not fire: 0.9055% came within '
+      + '9% of its own tolerance and stayed green. So this is caught by a check on the '
+      + 'SIGN of a discretisation error -- which has margin where a tolerance does not -- '
+      + 'and by two consistency checks in a renderer that has no business being the '
+      + 'metric\'s gate. Both were luck rather than design. THE CHECK THAT WAS DESIGNED '
+      + 'FOR IT EXISTS, and it fires: sphere goes RED at 55 of 248 (37 of 192 filtered), '
+      + 'and the four sharpest lines are all closed-form statements about the grid with no '
+      + 'simulation in them -- "phi_C is the arithmetic mean of its two face latitudes got '
+      + '0.014454 limit 1.0000e-16", "ly_S + ly_N == 2 R dlam cos(phi_C) cos(half) got '
+      + '0.028864 limit 1e-15", "geoCoef == -tan(phi_C)/(4R) got 6.0954e-4", "bedPhi == '
+      + '2 R tan(dphi/2) got 0.413783". Then the area identity at 0.485758% and the '
+      + 'per-band sums DIFFERING from the total, which is the mis-distributed-by-row '
+      + 'signature this entry predicted, and five f rows off by 0.015230% against a '
+      + 'tolerance of 1e-12%. Note what still does NOT fire: not one resting-lake line, at '
+      + 'either order, on any bed. The correction this entry makes to src/geometry.mjs -- '
+      + 'that the well-balancing identity survives ANY phi_C -- is confirmed by a shipped '
+      + 'gate that had every opportunity to contradict it',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '    const pC = 0.5 * (pS + pN);                // ARITHMETIC mean; see the header',
+      repl: '    const pC = Math.asin(0.5 * (Math.sin(pS) + Math.sin(pN)));   // MUTANT: area-bisecting latitude',
+    }],
+  },
+  {
+    id: 'ycoef-single-divisor',
+    name: 'the two rows across a latitude face share one area',
+    breaks: 'exact mass conservation across a latitude face. The face is ONE length '
+      + 'shared by two cells and each must divide the same flux*length by its OWN area; '
+      + 'handing the receiving cell the donor\'s divisor is the plausible simplification, '
+      + 'because it is what Cartesian does, where the two areas are equal. On a sphere '
+      + 'they differ by cos(phi + dphi)/cos(phi), which is a factor 3 between the last '
+      + 'two rows at 6 degrees',
+    expect: 'any spherical volume check, or the mode period once the mode has leaked '
+      + 'mass. Note that this mutation is INVISIBLE AT REST, where every fyM is zero and '
+      + 'there is nothing to divide -- so it is the one spherical mutation on this list '
+      + 'that the missing lake-at-rest gate would ALSO have missed',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17: catastrophic and, unusually for this list, catastrophic on the '
+      + 'flat bed too -- 2.6145e+2 m/s at order 2 with volume drift +1.350e-2, i.e. the '
+      + 'ocean gains 1.35% of its own mass in 400 steps (+1.299e-1, thirteen percent, in '
+      + 'the capped run). Order 1 the same. CAUGHT by globe, 2 checks, and by the '
+      + 'MAGNITUDE checks rather than the sign ones this time: n = 2 at 4 deg reads '
+      + '79335.313729 s against 82512.836103 (3.850%) and n = 3 at 6 deg reads '
+      + '51233.985350 against 58345.385944 (12.18%). The n = 2 check at 6 deg stayed '
+      + 'GREEN, which is worth recording: the coarsest resolution is the one that missed '
+      + 'it, so a gate that ran only the cheapest case would have reported this clean. '
+      + 'ALSO CAUGHT BY sphere, 140 of 248 (83 of 192 filtered) -- the largest count on '
+      + 'the list, and the entry that disproves the `expect` line above. "Invisible at '
+      + 'rest" was wrong, and wrong for an instructive reason: 400 steps of a lake that is '
+      + 'only ALMOST at rest is enough for a non-conservative divisor to feed on its own '
+      + 'round-off, so section 2 reports "flat 6deg: max speed got 157.985231 limit '
+      + '1.4996e-10" and "flat 6deg: volume drift got 0.230470 limit 5.5446e-14" -- the '
+      + 'FLAT bed, at rest, gaining 23% of its own mass. The prediction was made from the '
+      + 'algebra of a single step and the measurement is over four hundred of them',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '        const invR = th / dyRowS[j + 1];',
+      repl: '        const invR = invL;   // MUTANT: the receiving row divides by the donor row area',
+    }],
+  },
+  {
+    id: 'curvature-off',
+    name: 'metric curvature u tan(phi)/R dropped from the effective f',
+    breaks: 'the metric half of the rotation term. src/swe.mjs makes the case against '
+      + 'itself better than a mutant can: the term "is easy to omit and nearly impossible '
+      + 'to catch afterwards -- it is exactly zero at rest, it is 1.5e-3 of f at 45 '
+      + 'degrees so an inertial-oscillation check cannot see it, and it is absent from '
+      + 'any zonal-strip test. Only advection over a pole, or a long high-latitude jet, '
+      + 'notices"',
+    expect: 'a spherical case with a sustained ZONAL velocity at high latitude. There is '
+      + 'exactly one, and it was written for this: tools/verify-sphere.mjs section 6, a '
+      + '50 m/s zonal flow evaluated at 45, 59, 83 and 85 degrees, plus a jet integrated '
+      + 'for 64 steps. Every OTHER spherical case in the tree is a zonally symmetric '
+      + 'P_n(sin lat) mode, where u is zero by symmetry for the whole run and this term '
+      + 'is exactly zero',
+    review: 'not measured by anyone before this. It is on the list because the source '
+      + 'file predicts its own blind spot in writing, and a prediction like that deserves '
+      + 'to be tested rather than admired',
+    found: '2026-08-17: byte-for-byte inert on every RESTING case measured. All eight '
+      + 'resting-ocean figures reproduce the baseline exactly (7.7132e-14 / 6.2598e-13 / '
+      + '1.2030e-12 / 6.2598e-13 at order 2, and the order-1 four likewise) and globe is '
+      + 'GREEN. The source file\'s prediction about what CANNOT see it is exactly right, '
+      + 'including the reason. '
+      + 'CAUGHT BY sphere, 6 of 248 (6 of 192 filtered) -- a declared survivor whose '
+      + 'declaration named a file that already contained the case it was asking for. '
+      + 'WHICH CHECKS: all six are section 6, and nothing else in 248 moves. The '
+      + 'decisive line quotes the blind spot back at the mutant: "curvature / f at 45 deg '
+      + 'for a 1 m/s current -- got -8.1930e-10 want 0.001500 rel 100.000055% tol 5% ... '
+      + 'an inertial-oscillation check with a 1% tolerance cannot see this". Then the '
+      + 'jet: "f_eff at 85 deg, 50 m/s zonal got 1.4529e-4 want 2.3499e-4 rel 38.17% tol '
+      + '0.1% -- curvature is 61.7% of f here", 30.63% at 83 deg, 9.46% at 59, 7.07% at '
+      + '45; and the integrated version, "accumulated turn at 83 deg over 64 steps got '
+      + '0.063342 want 0.091439 rel 30.73% tol 2%". THE SHAPE OF THE FIX IS THE LESSON: '
+      + 'the term is 1.5e-3 of f at 1 m/s and 45 deg, so no tolerance was ever going to '
+      + 'reach it -- what reached it was choosing a latitude and a speed where the term '
+      + 'is 61.7% of f, i.e. a CASE and not a threshold, exactly as the declaration said',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '          const fe = f0 + U[k] * tR;',
+      repl: '          const fe = f0;   // MUTANT: metric curvature term dropped',
+    }],
+  },
+  {
+    id: 'f-constant',
+    name: 'f-plane: f taken at mid-domain, beta = 0',
+    breaks: 'the variation of the Coriolis parameter with latitude. f = 2 omega sin(phi) '
+      + 'becomes 2 omega sin((lat0 + lat1)/2), which on a full pole-to-pole sphere is '
+      + 'f = 0 EVERYWHERE: no beta effect, no Rossby waves, no western intensification, '
+      + 'and no rotation at all outside a capped band',
+    expect: 'any spherical case with omega != 0 that measures something. globe has none -- '
+      + 'its only spherical run is the aquaplanet mode period at omega = 0, and its only '
+      + 'non-zero omega is in a label check that asserts the string "Coriolis ON" is '
+      + 'present and never looks at the number. tools/verify-sphere.mjs sections 5 and 6 '
+      + 'have five: f row by row, an inertial oscillation measured by the flow at two '
+      + 'latitudes, and the zonal-jet family',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17: inert on every RESTING case, for the stated reason -- omega is 0 '
+      + 'in every spherical case globe runs, and 2*0*sin(anything) is 0 either way. All '
+      + 'eight resting figures identical to baseline and globe GREEN. '
+      + 'CAUGHT BY sphere, 14 of 248 (14 of 192 filtered) -- a declared survivor whose '
+      + 'declaration asked for "one rotating spherical run" that was already written. '
+      + 'WHICH CHECKS: five in section 5a, f row by row against 2*Omega_REF*sin(phi) at a '
+      + 'tolerance of 1e-12% -- "row 0 (lat -59) got 0 want -1.2501e-4 rel 100%" -- which '
+      + 'is the beta effect deleted and read off directly with no simulation involved; '
+      + 'two in 5c, the inertial oscillation MEASURED BY THE FLOW ITSELF, "f measured at '
+      + '20 deg by the flow itself got 2.8563e-9 want 4.9881e-5"; one more in 5c that is '
+      + 'the sharpest of the set, "ratio of the two rates == sin(phi_B)/sin(phi_A) got '
+      + '4.756409 want 2.532089 ... predicted with no free parameter", i.e. a check on '
+      + 'the SHAPE of f(phi) that no constant error can satisfy; and six in section 6 as '
+      + 'collateral, because f_eff is built on f. This mutant was always a measurement of '
+      + 'the CASE LIST rather than of the solver, and what it now reports is that the '
+      + 'case list has a rotating sphere in it',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '    g.fRow[j] = 2 * omega * Math.sin(pC);',
+      repl: '    g.fRow[j] = 2 * omega * Math.sin(0.5 * (p0 + p1));   // MUTANT: f-plane at mid-domain',
+    }],
+  },
+  {
+    id: 'lon-wrap-reflect',
+    name: 'longitude stops being periodic: the wrap becomes a wall',
+    breaks: 'the topology. src/swe.mjs is explicit that on a sphere longitude "WRAPS -- '
+      + 'it is not a boundary, it is the same water"; the mutant makes east and west '
+      + 'reflecting, so the planet becomes a bounded strip 360 degrees wide with two '
+      + 'invisible glass walls down the same meridian. Every zonally propagating wave now '
+      + 'bounces instead of returning, which is the difference between a Kelvin wave '
+      + 'circling the globe and a seiche in a very long tank',
+    expect: 'any spherical case with zonal structure or zonal flow. There is none, and '
+      + 'that is what this mutant is on the list to say out loud: the only spherical case '
+      + 'anywhere is a P_n(sin lat) mode, which is zonally SYMMETRIC by construction, so '
+      + 'every cell in a row holds the same value and a wall between two identical cells '
+      + 'transports the same nothing a wrap does',
+    review: 'not measured by anyone before this. Added because the periodic longitude is '
+      + 'one of the port\'s headline claims and nothing was pointed at it',
+    found: '2026-08-17: SURVIVES everything, measured under full escalation. Resting '
+      + 'ocean at order 2: 7.7132e-14 flat (baseline 7.7132e-14), 6.0099e-13 uneven '
+      + '(6.2598e-13), 1.1609e-12 capped (1.2030e-12), 6.0099e-13 island; order 1 '
+      + 'identical to baseline on all four, and every Cartesian suite GREEN under full '
+      + 'escalation together with globe. Worth noting that the numbers DO move in the '
+      + 'thirteenth digit rather '
+      + 'than being byte-identical -- the ghost cells really are different, so the '
+      + 'arithmetic really is different -- so this was never an inert mutation reported '
+      + 'as a survivor. It is a live topological change, and it WAS unmeasured. AND THIS '
+      + 'IS THE MUTANT THAT FOUND THE EXIT HANG: the first escalation of it printed '
+      + '"CAUGHT, detected by verify-render(TIMEOUT)", which was false in a way worth '
+      + 'remembering -- tools/verify-render.mjs had run every one of its checks (104 of '
+      + 'them that day, 115 now), printed ALL PASS, and then failed to terminate. See the '
+      + 'TIMEOUT paragraph at the top of this file. '
+      + 'CAUGHT BY sphere, 9 of 248 (9 of 192 filtered) -- a declared survivor blocked on '
+      + 'a file that already existed. WHICH CHECKS: the two that are ABOUT the topology '
+      + 'are section 7b, rotate the whole planet by a whole number of cells and compare -- '
+      + '"4 deg grid, rotated 23 cells (92 deg, across the antimeridian): 90x45, 200 '
+      + 'steps, max |dh| = 4.8496e-4, max |d(hu,hv)| = 9.2550e-2" against a shipped '
+      + 'residual at round-off, and "3.6 deg grid, rotated 23 cells: max |dh| / h got '
+      + '8.4809e-10 limit 1.0000e-11". That is a cheaper and stronger instrument than the '
+      + 'travelling wave the declaration asked for: it needs no closed form and no transit '
+      + 'time, only the fact that a sphere has no preferred meridian. The other seven are '
+      + 'sections 5c and 6 as collateral -- the jet cases have zonal flow, so a wall in '
+      + 'the way of it moves the answer -- which is the same sentence the declaration '
+      + 'wrote about curvature-off, from the other end',
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/swe.mjs',
+      find: '      ? { west: periodic, east: periodic, south: reflect, north: reflect }',
+      repl: '      ? { west: reflect, east: reflect, south: reflect, north: reflect }   // MUTANT: the wrap is a wall',
+    }],
+  },
+  {
+    id: 'merian-eigenvalue',
+    name: "the SUITE's own closed form: n(n+1) -> n(n+2)",
+    breaks: 'nothing in the solver. This mutant breaks THE TARGET and not the subject, '
+      + 'and it is the only one in this file that does. The spherical Laplacian '
+      + 'eigenvalue -n(n+1)/R^2 is what turns a measured period into a prediction; '
+      + 'n(n+2) moves the closed form by sqrt(8/6) = 1.1547 for n = 2 and leaves the '
+      + 'solver untouched',
+    expect: 'globe section 8 must go RED. If it stayed green the "gate" would be '
+      + 'comparing the solver against itself and the 22.9202 h in the on-screen label '
+      + 'would be decoration. This is the g x 1.10 test applied to a suite instead of to '
+      + 'a constant, and it is the only way to find out whether measureModePeriod\'s '
+      + 'refusal to import G buys anything',
+    review: 'not measured by anyone before this. It exists because a closed-form gate '
+      + 'that cannot fail is the exact defect this whole harness was built after',
+    found: '2026-08-17: CAUGHT by globe, 5 checks, and the numbers say the gate is genuinely '
+      + 'external. The MEASURED period does not move -- 82331.848650 s at 6 deg, '
+      + '82430.283373 at 4, the same values the unmutated run produces -- while the '
+      + 'target moves to 71458.212204 s, leaving 15.2168% and 15.3545% against a 1% '
+      + 'tolerance, and both sign checks fall with them. A circular gate would have '
+      + 'printed ALL PASS here: the measurement and the prediction would have moved '
+      + 'together, exactly as they did for g in the original review',
+    // `sphere` is deliberately NOT declared here, and this is the one spherical
+    // entry where that is true. tools/verify-sphere.mjs does not import
+    // src/globe.mjs at all, so it would be GREEN by construction rather than by
+    // blindness, and a blind-spot row that was arranged in advance teaches
+    // nothing. verify-sphere has its OWN closed form for the same oscillation --
+    // mutating that one would be a separate entry, and a worthwhile one.
+    suites: ['globe'],
+    patches: [{
+      file: 'src/globe.mjs',
+      find: '  const closed = 2 * Math.PI * R / Math.sqrt(gRef * H * n * (n + 1));',
+      repl: '  const closed = 2 * Math.PI * R / Math.sqrt(gRef * H * n * (n + 2));   // MUTANT: wrong eigenvalue',
+    }],
+  },
+  {
+    id: 'R-x1.1-alone',
+    name: 'planetary radius 10% high',
+    breaks: 'the scale of everything -- every area, face length and divisor, the '
+      + 'timestep, and every wave transit time. Applied INSIDE sphericalGeometry so that '
+      + 'a caller passing R explicitly is fooled too: mutating the exported R_EARTH '
+      + 'default would be inert, because every spherical case in the tree passes its own '
+      + 'radius, and an inert mutant that reads CAUGHT-by-nothing teaches nothing',
+    expect: 'globe section 8: the closed form is built from the R the CALLER declared '
+      + 'while the solver runs on 1.1 R, so the measured period must come out about 10% '
+      + 'long against a 1% tolerance. This is one of the two controls for the pair below',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17: CAUGHT by globe -- 90565.418278 s against 82512.836103 (9.7592%) '
+      + 'at 6 deg and 9.8903% at 4 deg, plus the sign checks. Slightly under 10% because '
+      + 'the discretisation error is negative and partly cancels it, which is itself '
+      + 'evidence the two effects are being measured separately rather than fitted. Also '
+      + 'CAUGHT by sphere, 70 of 248 (37 of 192 filtered), and by a completely different '
+      + 'route: the area identity, "whole sphere at 6 deg got 6.1718e+14 want 5.1006e+14 '
+      + 'rel 21.000000% tol 1.00e-12%", at every resolution. R is SQUARED there, so a 10% '
+      + 'error is exactly 21%, and the check needs no wave and no clock. That the two '
+      + 'suites catch the same mutant through a transit time and through a surface area '
+      + 'is the useful part: neither is a re-implementation of the other',
+    suites: ['globe', 'sphere'],
+    patches: [
+      {
+        file: 'src/geometry.mjs',
+        find: '  nx, ny, R = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega = 0,',
+        repl: '  nx, ny, R: R_IN = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega: OM_IN = 0,',
+      },
+      {
+        file: 'src/geometry.mjs',
+        find: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+        repl: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const R = R_IN * 1.1, omega = OM_IN;   // MUTANT: radius 10% high',
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+      },
+    ],
+  },
+  {
+    id: 'omega-div1.1-alone',
+    name: 'rotation rate 10% low',
+    breaks: 'f everywhere, by 9.09%. On its own that is a large error in the only force '
+      + 'that makes an ocean circulate',
+    expect: 'a spherical case with omega != 0 that measures something -- the same case '
+      + 'f-constant needs. This is the other control for the pair below, and the reason '
+      + 'both controls are on the list: if omega alone were not catchable either, then '
+      + 'the pair surviving would say nothing about the a*omega degeneracy and everything '
+      + 'about a missing case',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17: globe GREEN -- nothing globe runs multiplies by omega on a sphere '
+      + 'and then checks the answer, so the constant could be off by any factor at all '
+      + 'and globe would stay green. '
+      + 'CAUGHT BY sphere, 13 of 248 (13 of 192 filtered) -- a declared survivor blocked '
+      + 'on a file that already existed. WHICH CHECKS: five rows of section 5a, f against '
+      + '2*Omega_REF*sin(phi) row by row, every one off by exactly 9.090909% (which is '
+      + '1 - 1/1.1, i.e. the mutation read straight off a still grid at a tolerance of '
+      + '1e-12%); two in 5c, the inertial oscillation measured by the FLOW -- "f measured '
+      + 'at 60 deg by the flow itself got 1.1416e-4 want 1.2630e-4 rel 9.612063% tol '
+      + '1.5%" -- which is the one that matters, because it is the solver turning and not '
+      + 'a constant being read back; and six in section 6 as collateral. THE DECLARATION '
+      + 'THAT USED TO SIT HERE said the repository could see neither the VALUE of omega '
+      + 'nor its LATITUDE DEPENDENCE and that one geostrophic case would close both '
+      + 'entries at once. Both halves are now measured, and by two DIFFERENT instruments: '
+      + 'this entry is caught by the value (a uniform 9.09%) and f-constant by the shape '
+      + '(the ratio check at 87.85%), which is what stops the pair below from hiding',
+    suites: ['globe', 'sphere'],
+    patches: [
+      {
+        file: 'src/geometry.mjs',
+        find: '  nx, ny, R = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega = 0,',
+        repl: '  nx, ny, R: R_IN = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega: OM_IN = 0,',
+      },
+      {
+        file: 'src/geometry.mjs',
+        find: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+        repl: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const R = R_IN, omega = OM_IN / 1.1;   // MUTANT: rotation 10% low',
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+      },
+    ],
+  },
+  {
+    id: 'R-and-omega-paired',
+    name: 'radius x1.1 AND rotation /1.1 together',
+    breaks: 'both scales at once, in the combination that hides. Geostrophy, the Rossby '
+      + 'radius, the Rossby number and the beta parameter all reach the answer through '
+      + 'the PRODUCT a*omega or through groupings of it, so a compensating pair can leave '
+      + 'a whole class of rotating measurements exactly where it found them while both '
+      + 'constants are wrong. Two mutations that are each catchable can be uncatchable '
+      + 'together, and that is a property of the QUESTION a suite asks rather than of its '
+      + 'tolerances',
+    expect: 'either outcome is worth having in writing. If the pair survives while each '
+      + 'half is caught, the suite is measuring a rotating balance and the degeneracy is '
+      + 'real. If the pair is caught, then whatever catches it is NOT a geostrophic '
+      + 'measurement -- it is something that sees a and omega separately, which for a '
+      + 'non-rotating gravity-wave period means it sees a alone',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17, and the answer changed once a rotating suite was pointed at it. '
+      + 'AGAINST globe: CAUGHT by the second branch above, and therefore vacuously -- '
+      + '90565.418278 s against 82512.836103, 9.7592% at 6 deg and 9.8903% at 4, numbers '
+      + 'IDENTICAL to R-x1.1-alone digit for digit, because globe runs at omega = 0 and '
+      + 'the omega half of this pair is literally inert in it. Caught by the radius alone. '
+      + 'AGAINST sphere: CAUGHT at 77 of 248 (44 of 192 filtered), and the SEVEN-CHECK '
+      + 'DIFFERENCE from R-x1.1-alone is the whole result. Diffed line by line: the pair '
+      + 'fails everything R-alone fails, plus exactly seven more, and all seven are the '
+      + 'omega half -- five rows of "f = 2 Omega sin(phi)" at 9.090909% and the two '
+      + 'inertial-oscillation rates measured by the flow ("f measured at 60 deg by the '
+      + 'flow itself got 1.1428e-4 want 1.2630e-4"). Nothing R-alone fails is repaired by '
+      + 'the pairing. SO THE DEGENERACY IS REAL AND IT IS NOT WHAT SAVES THIS MUTANT: the '
+      + 'two constants are caught SEPARATELY, by an area identity that sees a alone and '
+      + 'an f identity that sees omega alone, and a compensating pair cannot hide from '
+      + 'two checks that never form the product. That is a stronger property than a '
+      + 'geostrophic-balance test would have, because a geostrophic test IS the thing '
+      + 'a*omega hides in. What is still absent is a check whose answer depends on the '
+      + 'product -- a Rossby radius, a western-boundary width -- and the honest statement '
+      + 'is that this mutant no longer probes the degeneracy at all; it probes two '
+      + 'independent constants',
+    suites: ['globe', 'sphere'],
+    patches: [
+      {
+        file: 'src/geometry.mjs',
+        find: '  nx, ny, R = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega = 0,',
+        repl: '  nx, ny, R: R_IN = R_EARTH, lat0 = -90, lat1 = 90, ng = 2, omega: OM_IN = 0,',
+      },
+      {
+        file: 'src/geometry.mjs',
+        find: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+        repl: L(
+          '  const H = ny + 2 * ng;',
+          "  const g = blank('sphere', nx, ny, ng, H);",
+          '  const R = R_IN * 1.1, omega = OM_IN / 1.1;   // MUTANT: a*omega preserved, both wrong',
+          '  const dlam = 2 * Math.PI / nx;',
+        ),
+      },
+    ],
+  },
+  {
+    id: 'cosLat-plain-cos',
+    name: 'cosLat() -> Math.cos(p)',
+    breaks: 'the exactness of a pole face, and nothing else. Math.cos(Math.PI/2) is '
+      + '6.123e-17 rather than 0, because pi/2 is not representable, so a face that '
+      + 'should not exist gets a length of 2.7e-11 m and a pressure flux crosses it. '
+      + 'src/geometry.mjs records that this drove the resting residual to 2.8e-10 m/s^2 '
+      + 'at 1 degree, GROWING with refinement, and worst at exactly the row nobody would '
+      + 'look at',
+    expect: 'declared a CONDITIONING regression rather than a correctness bug, so the '
+      + 'honest expectation used to be that it survives. It is on the list because the '
+      + 'header quotes a specific number -- 2.8e-10, three hundred times the gate of the '
+      + 'day -- and a number like that should have a mutant standing next to it. What '
+      + 'actually catches it is not a conditioning threshold at all: it is an EXACTNESS '
+      + 'claim about the pole face, verify-sphere section 1d, which asserts the length is '
+      + 'zero rather than small and needs no tolerance to do it',
+    review: 'the sphere session measured it SURVIVING all three resting beds: 7.532e-14 '
+      + 'flat, 7.503e-13 uneven, 6.040e-13 island, against 7.713e-14 / 6.689e-13 / '
+      + '5.311e-13 clean',
+    found: '2026-08-17: the SOLVER is blind to it and at 2 degrees it is not even a '
+      + 'regression. Order 2: '
+      + '7.5315e-14 flat (baseline 7.7132e-14 -- BELOW it), 7.3897e-13 uneven (6.2598e-13 '
+      + '-- 1.18x), 1.0795e-12 capped (1.2030e-12 -- below), 7.3897e-13 island. Order 1 '
+      + 'the same picture. The area identity does not move at all (1.2253e-16, unchanged), '
+      + 'which is the useful part: the mutation is a pole-row effect and the pole rows '
+      + 'contribute almost no area, so a global metric check cannot see it either. globe '
+      + 'GREEN. '
+      + 'AND YET CAUGHT BY sphere, 3 of 248 (3 of 192 filtered) -- the joint-narrowest '
+      + 'catch on the list, and the one that best shows what kind of check reaches a '
+      + 'conditioning bug. All three are section 1d, and NONE of them runs a simulation: '
+      + '"south pole face length === 0 (not merely small) -- lyS[first interior] = '
+      + '3.40436277491709e-11, Math.cos would give 3.4044e-11 m", the north-pole twin, '
+      + 'and "every row beyond a pole is closed on both faces -- 4 ghost rows, all lyN '
+      + 'and lyS === 0". The declaration that used to sit here was right that no '
+      + 'THRESHOLD could reach this -- the residual moves by less than a factor of two -- '
+      + 'and wrong that no check could: an EXACTNESS claim (=== 0, not < eps) has '
+      + 'infinite margin by construction, and 3.4e-11 m is not zero. It is the same move '
+      + 'as a sign check having margin where a magnitude tolerance does not. NOTE what '
+      + 'this still does NOT settle -- the sphere header\'s 2.8e-10 figure was measured at '
+      + '1 DEGREE and described as GROWING with refinement, and nothing here tests a '
+      + 'trend. The refinement sweep is still unwritten and is still the only instrument '
+      + 'that would confirm or refute that claim',
+    // NOT `blocked`, then or now: nobody ever specified a gate for this one, and
+    // padding that count would have cheapened it -- which is the opposite mistake
+    // from the eight entries in this block that named a file and were wrong about
+    // it. If a sweep is ever written, this is the shape it needs -- residual
+    // against dphi at 4, 2, 1 and 0.5 deg, asserting the trend does not GROW --
+    // because the claim in src/geometry.mjs is about refinement and a single
+    // resolution cannot test it. The exactness check above does not test it either.
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '  return co <= 0 ? 0 : Math.sin(co);',
+      repl: '  return Math.cos(p);   // MUTANT: 6.1e-17 at the pole instead of an exact zero',
+    }],
+  },
+  {
+    id: 'geocoef-via-tan',
+    name: 'geoCoef from tan(phi) instead of the face lengths',
+    breaks: 'nothing algebraically -- (ly_N - ly_S)/A and -tan(phi_C)/R are the SAME '
+      + 'number, by the identity in src/geometry.mjs\'s header -- and something '
+      + 'numerically: the flux and the source stop sharing operands and meet through two '
+      + 'different transcendentals instead',
+    expect: 'declared a CONDITIONING regression, not a correctness bug, and therefore '
+      + 'expected to survive. This entry exists so that the declaration is TESTED every '
+      + 'run rather than asserted once. If it ever starts being caught, either somebody '
+      + 'tightened a gate to rounding level or the identity stopped holding, and both are '
+      + 'things somebody should be told about. Somebody did: see `found`',
+    review: 'the sphere session measured an ISOLATED algebraic probe 22-87x worse and '
+      + 'growing under refinement, then measured the same substitution THROUGH THE SOLVER '
+      + 'at a flat 2.2-3.0x: 2.96e-13 vs 6.62e-13 at 4 deg, 3.65e-13 vs 9.60e-13 at 1 '
+      + 'deg, 3.43e-13 vs 1.02e-12 at 0.5 deg. The standalone probe exaggerated the gap, '
+      + 'which is exactly why this is a declared survivor and not a gate',
+    found: '2026-08-17: SURVIVES, with the largest conditioning penalty of any mutant on '
+      + 'this list and still fourteen orders below anything that matters. Order 2: '
+      + '1.2589e-12 flat against a baseline of 7.7132e-14 -- 16x, the biggest ratio here '
+      + '-- 1.0297e-12 uneven (1.6x), 1.1688e-12 capped (0.97x, i.e. no penalty at all), '
+      + '1.0297e-12 island. Order 1: 9.8079e-13 flat against 6.2601e-14, again 16x. So '
+      + 'the ratio depends on the case and not just on the resolution, which is one more '
+      + 'reason to declare rather than gate: a threshold tuned on the flat bed would be '
+      + 'loose on the uneven one and vice versa. globe GREEN, area identity '
+      + 'unchanged at 1.2253e-16. '
+      + 'CAUGHT BY sphere, 6 of 248 (6 of 192 filtered), and by the one part of that '
+      + 'suite that is NOT verification: all six are section 9, the CHECKED-IN BASELINE, '
+      + 'and nothing else in 248 moves. "baseline flat 2deg: max speed got 1.2589e-12 '
+      + 'want 7.7132e-14 ratio 16.322 band 0.25 .. 4", the same at 3 and 4 deg, and three '
+      + '"max |eta|" rows where the recorded value is EXACTLY 0 and the mutant produces '
+      + '2.7285e-12, so the comparison is exact-or-not rather than a ratio. THAT IS THE '
+      + 'HONEST READING AND IT IS NOT "the gate got tighter": section 9 says of itself '
+      + 'that it can only report "unchanged", never "right", and it pins these residuals '
+      + 'by ORDER OF MAGNITUDE (a factor of 4 either way) precisely so that a Math-library '
+      + 'change does not fire it. A 16x conditioning penalty walks straight through a 4x '
+      + 'band. So this entry is no longer a declared survivor -- but what caught it is a '
+      + 'REGRESSION line, not a physics one, and the argument against gating the '
+      + 'conditioning directly still stands unchanged: a threshold on 1e-12 against '
+      + '1e-14 would be a threshold on the last bits of a double. The refinement TREND is '
+      + 'still the only instrument that would settle whether the tan form is worse in '
+      + 'kind rather than worse on this machine, and it is still unwritten',
+    // NOT `blocked`, then or now: no gate was ever specified for it, so there was
+    // no filename to name. The instrument that would judge it HONESTLY is still
+    // the refinement trend rather than a threshold at one resolution -- what
+    // caught it is a baseline row, which is a different claim.
+    suites: ['globe', 'sphere'],
+    patches: [{
+      file: 'src/geometry.mjs',
+      find: '    g.geoCoef[j] = (g.lyN[j] - g.lyS[j]) / (4 * A);',
+      repl: '    g.geoCoef[j] = -Math.tan(pC) / (4 * R);   // MUTANT: the same number through two transcendentals',
+    }],
+  },
+
+  // =========================================================================
+  // THE RENDERER. It had no automated coverage at all until 2026-08-17:
+  // src/render.mjs exported rampSymmetry() and NOTHING in the tree called it, so
+  // every colour figure in its header was reproducible by hand and by nothing
+  // else. tools/verify-render.mjs carried 104 checks the day it landed and carries
+  // 115 as this was rewritten, which is why the count is no longer repeated in the
+  // entries below: the run prints it. These two mutants
+  // are here to find out whether those checks can fail. The first is the control that
+  // suite's own author broke to prove it; the second attacks a claim in
+  // src/render.mjs that the same author reports is misattributed.
+  // =========================================================================
+  {
+    id: 'ramp-lab-crest',
+    name: 'LAB_CREST b* 44 -> 45',
+    breaks: 'one unit of b* at the crest end of the colour ramp -- a single byte in a '
+      + 'single pixel at full scale. It is the smallest change that can be made to the '
+      + 'ramp and still be a change, which is what makes it the right control: a suite '
+      + 'that cannot see this is pinning nothing',
+    expect: 'tools/verify-render.mjs, which claims ten independent failures for exactly '
+      + 'this mutation. globe is declared as well, and is expected to stay GREEN: its '
+      + 'colour path calls the same exported surfaceColour and compares byte-for-byte '
+      + 'against it, so it moves with the ramp by construction. That blind spot is the '
+      + 'reason it is declared -- an intentional circularity should be visible in the '
+      + 'blind-spots table rather than described in a comment',
+    review: 'the suite\'s author measured it in a copy of the tree, against the 104-check version of that file: 94/104 for b* 45, '
+      + '86/104 for L* 84, 86/104 for crest = msl -- i.e. 10, 18 and 18 failures. Those are that agent\'s numbers; this '
+      + 'harness re-measures the first of them every run, and the FAILURE COUNT is the half that stays comparable now that the denominator has moved to 115',
+    found: '2026-08-17: CAUGHT, and the author\'s count reproduces EXACTLY -- 10 failures, '
+      + '10 failures of the 104 checks it then had, from one unit of b*. The three '
+      + 'sharpest lines: the exact-ramp '
+      + 'asymmetry about msl reads 1.1945e-4 against a target of 1.1740e-4; the 8-bit '
+      + 'asymmetry 0.464215 against 0.441000; and "the coarse sweep understates the 8-bit '
+      + 'worst case" fires because the two readings TIE at 0.4642, which is a check '
+      + 'written to notice exactly that. globe GREEN as predicted, so the blind '
+      + 'spot is confirmed rather than assumed',
+    suites: ['verify-render', 'globe'],
+    patches: [{
+      file: 'src/render.mjs',
+      find: 'const LAB_CREST = [86, 6, 44];',
+      repl: 'const LAB_CREST = [86, 6, 45];   // MUTANT: one unit of b*',
+    }],
+  },
+  {
+    id: 'ramp-even-length',
+    name: 'RAMP_N 1025 -> 1024',
+    breaks: 'the odd entry count, so there is no LUT entry at t = 0 and mean sea level '
+      + 'falls half a bin off the midpoint. src/render.mjs calls the odd count '
+      + '"load-bearing" and quotes 0.304 RGB units of step at msl and 6.45e-2 L* of '
+      + 'asymmetry for an even ramp',
+    expect: 'a DISPUTED claim, which is why it is on the list. The verify-render author '
+      + 'reports that the header\'s two figures reproduce only under the naive index '
+      + 'mapping the ramp does NOT use, and that under the shipped symmetric indexing an '
+      + 'even count gives a step of exactly 0 and an asymmetry of 1.1713e-4 against the '
+      + 'shipped 1.1737e-4 -- i.e. there are two independent defences and the header '
+      + 'credits the wrong one. What an even count does cost is L*(msl): 52.9687 instead '
+      + 'of 53.0009. So this mutant asks whether the suite pins the quantity that '
+      + 'actually moves, rather than the one the comment talks about',
+    review: 'not measured by anyone before this',
+    found: '2026-08-17: CAUGHT by both, and the author\'s correction is vindicated. '
+      + 'verify-render 6 failures of the 104 checks it then had -- 7 of 115 when the run '
+      + 'that rewrote this note re-measured it, the extra one being "...and that step is '
+      + 'the figure this suite quotes" -- and the two decisive '
+      + 'lines are the ones about the mean '
+      + 'level -- "L*(msl) is the L* the ramp was declared with", 52.968655 against '
+      + '53.000000, and "L*(msl) is the midpoint of the two endpoints", the same figure. '
+      + 'The msl STEP is not what fires; the asymmetry lines that do fire read 0.495494 '
+      + 'and 0.485676 against 0.441000 and 0.404500, nowhere near the 6.45e-2 the header '
+      + 'attributes to this cause. globe also goes red -- 1 check when this note was '
+      + 'written, 2 in the run that rewrote it -- by a route worth '
+      + 'recording: its baked byte table stops matching live surfaceColour() over a '
+      + '20001-point sweep by exactly 1 byte, because an even ramp shifts which half-bin '
+      + 'a sampled t lands in. That is a self-consistency check catching a real defect by '
+      + 'accident, which is worth having but is not coverage',
+    suites: ['verify-render', 'globe'],
+    patches: [{
+      file: 'src/render.mjs',
+      find: 'const RAMP_N = 1025;',
+      repl: 'const RAMP_N = 1024;   // MUTANT: even ramp, no entry at mean sea level',
+    }],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1456,6 +2682,61 @@ function selfTest() {
     console.error('FATAL: toLF() is not the \\r\\n -> \\n substitution it claims to be.');
     process.exit(2);
   }
+
+  // THE `blocked` PREDICATE, asserted in both directions, for the same reason the
+  // CRLF pair above is. A guard that answered "absent" to everything would let the
+  // exact rot it exists to stop walk straight past it, and a guard that answered
+  // "PRESENT" to everything would make the harness unrunnable in a way somebody
+  // would fix by deleting the guard. So: a file that is certainly here must read
+  // PRESENT, and a file that certainly is not must read absent.
+  if (blockedFileState('tools/mutants.mjs') !== 'PRESENT') {
+    console.error('FATAL: blockedFileState() cannot see tools/mutants.mjs, which is the file '
+      + 'it is running out of. It would answer "absent" to every `blocked` declaration in this '
+      + 'list, which is precisely the failure it exists to catch. Refusing to run.');
+    process.exit(2);
+  }
+  if (blockedFileState('tools/no-such-suite-8f3a1c.mjs') !== 'absent') {
+    console.error('FATAL: blockedFileState() reports a file that does not exist as PRESENT. '
+      + 'Every `blocked` declaration is about to be flagged stale. Refusing to run.');
+    process.exit(2);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THE `blocked` GUARD -- the check that would have caught this file's own lie.
+//
+// A `blocked: 'tools/verify-sphere.mjs'` line says "the gate that would catch this
+// mutation has not been written yet". That is not a claim about the solver and it
+// is not a claim about a suite: it is a claim about the FILESYSTEM, and it is the
+// only kind of claim in this file that nothing was re-testing. `known` is re-tested
+// every run against the suites the entry declares -- but an entry blocked on a
+// missing file declares, by construction, only the suites that CANNOT see it, so a
+// green run confirmed the declaration forever.
+//
+// It duly went stale. tools/verify-sphere.mjs landed, green at 248/248, carrying
+// exactly the checks eight entries here said were missing; this header went on
+// printing "blocked on a suite that does not exist" for three days, and the
+// harness exited 0 every time. Ten declared survivors were false and the
+// instrument said so in a heading.
+//
+// One line of fs.existsSync closes it. It is a check that can fail, it is proven
+// able to fail in selfTest() above, and it is loud: a `blocked` path that is
+// PRESENT is a hard error before a single suite runs, because the cheapest moment
+// to learn that a gate now exists is before spending twenty minutes measuring
+// against the assumption that it does not.
+// ---------------------------------------------------------------------------
+
+/** 'PRESENT' or 'absent' for a repository-relative path. The whole of the guard. */
+const blockedFileState = (rel) => (fs.existsSync(path.join(REPO, rel)) ? 'PRESENT' : 'absent');
+
+/**
+ * Every `blocked` path must be absent. Returns the offenders; the caller decides.
+ * `blocked` is a bare repository-relative path and nothing else -- no prose, no
+ * parenthetical -- precisely so that this function can be one existsSync.
+ */
+function blockedFilesThatExist(mutants) {
+  return mutants.filter((m) => m.blocked && blockedFileState(m.blocked) === 'PRESENT')
+    .map((m) => ({ id: m.id, file: m.blocked }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,12 +2764,41 @@ function runSuite(dir, suite, timeoutMs) {
       const failLines = out.split('\n')
         .filter((l) => /^\s*FAIL\s/.test(l))
         .map((l) => l.trim().replace(/^FAIL\s+/, ''));
+      // HUNG AT EXIT is not the same thing as HUNG, and telling them apart is the
+      // difference between a verdict and a coin toss.
+      //
+      // Measured 2026-08-17: tools/verify-render.mjs intermittently fails to
+      // TERMINATE after finishing. Sequentially, one process at a time, on an
+      // otherwise ordinary tree: 18 runs, 16 of them 1.0 s, two of them still alive
+      // when killed -- and both of those had already written all 14583 bytes of
+      // their output, including the line "ALL PASS -- 104/104 checks". Every check
+      // ran, every check passed, and the process would not exit. (That quote is the
+      // line those runs actually printed, and it is left as printed:
+      // tools/verify-render.mjs carried 104 checks that morning and carries 115
+      // now. The fix here does not depend on the number -- it depends on there
+      // being a summary line at all.)
+      //
+      // Under the old classification that read as TIMEOUT, TIMEOUT counts as a
+      // detection, and the harness printed "lon-wrap-reflect ... CAUGHT, detected by
+      // verify-render(TIMEOUT)" for a mutation of the spherical longitude wrap that
+      // tools/verify-render.mjs cannot reach: it never builds a spherical sim. A
+      // spurious CAUGHT is the worst failure this harness has, worse than a
+      // spurious survivor, because it makes a real hole read as covered.
+      //
+      // So the summary line decides. If the suite printed a complete summary, it
+      // finished: believe the summary and record the non-termination as an anomaly.
+      // If it did not, it really did hang and TIMEOUT stands. That distinction
+      // cannot hide a detection -- a mutation that stalls the checks themselves
+      // prints no summary, and one that makes them fail prints "n FAILURES" and is
+      // still RED.
+      const hungAtExit = timedOut && m !== null;
       let status;
-      if (timedOut) status = 'TIMEOUT';
+      if (hungAtExit) status = fails > 0 ? 'RED' : 'GREEN';
+      else if (timedOut) status = 'TIMEOUT';
       else if (m === null) status = 'CRASH';
       else if (fails > 0 || code !== 0) status = 'RED';
       else status = 'GREEN';
-      resolve({ status, fails, total, ms, code, failLines, stderr: err.trim(), stdout: out });
+      resolve({ status, hungAtExit, fails, total, ms, code, failLines, stderr: err.trim(), stdout: out });
     });
   });
 }
@@ -1563,9 +2873,9 @@ async function main() {
   // CONCURRENCY. This used to be a flat 6. It is sized from the machine now,
   // because the number that decides the wall clock is how many of the SLOWEST
   // suite can be in flight at once: this list declares several verify-tide
-  // runs, and verify-tide is 343.3 s measured alone on the 16-core machine this
-  // was changed on against 8.2 s for verify-physics. At six workers the
-  // verify-tide jobs need a second wave and the run costs an extra six minutes
+  // runs, and verify-tide is 260.0 s measured alone on the 16-core machine this
+  // was last checked on against 6.9 s for verify-physics. At six workers the
+  // verify-tide jobs need a second wave and the run costs an extra four minutes
   // to learn nothing. Capped at 8 so a 64-core box does not start sixty node
   // processes contending for memory bandwidth, floored at 2 so a small one
   // still overlaps something. It is printed in the banner, and --jobs wins.
@@ -1597,6 +2907,30 @@ async function main() {
   console.log(`  ${selected.length} mutants (${nKnown} declared KNOWN SURVIVORS), `
     + `${usedSuites.length} suites declared, ${jobs} concurrent, node ${process.version}`);
   console.log(`  suites: ${usedSuites.join(', ')}`);
+  console.log(`  sphere: tools/verify-sphere.mjs ${SPHERE_FULL
+    ? 'WHOLE (--sphere-full): every section, 248 checks, 237.2 s measured alone'
+    : `FILTERED: --only ${SPHERE_SECTIONS} -- section 4 (merian, 79% of the clock) is NOT run`}`);
+
+  // THE `blocked` GUARD, before anything expensive. A declaration that a gate does
+  // not exist is re-tested against the disk on every run; see blockedFilesThatExist.
+  const nBlocked = selected.filter((m) => m.blocked).length;
+  const liars = blockedFilesThatExist(selected);
+  if (liars.length) {
+    console.log('');
+    console.error(`  FATAL: ${liars.length} mutant(s) are declared blocked on a file that IS PRESENT:`);
+    for (const l of liars) console.error(`     ${pad(l.id, 24)} blocked on ${l.file}   <-- this file exists`);
+    console.error('  A `blocked` declaration is a claim about the filesystem, and it has stopped');
+    console.error('  being true. Wire that suite into SUITES and SUITE_ORDER, declare it on each');
+    console.error('  entry above, RE-MEASURE, and rewrite the declarations from what the run says.');
+    console.error('  Do not delete the field: this happened once already, with');
+    console.error('  tools/verify-sphere.mjs, and ten entries were false for three days because');
+    console.error('  nothing looked. Refusing to run.');
+    return 2;
+  }
+  console.log(`  blocked declarations: ${nBlocked}`
+    + (nBlocked
+      ? `, every named file checked against the disk and still absent`
+      : ' -- no entry claims to be waiting on a file that has not been written'));
 
   const hashBefore = treeHash(REPO, ['src', 'tools']);
   console.log(`  repo sha256 (src + tools) before: ${hashBefore.slice(0, 16)}`);
@@ -1679,11 +3013,20 @@ async function main() {
       const r = base[s];
       console.log(`     ${pad(s, 16)} ${statusCell(r)}   ${secs(r.ms)}`);
       if (r.status !== 'GREEN') ok = false;
-      // 3x the measured baseline, floor 90 s. A mutant that changes the step
-      // count enough to triple a suite's runtime is not going to be green
-      // either way; the cap exists because a NaN can drive dt to zero and hang
-      // the run forever instead of failing.
-      timeout[s] = Math.max(90_000, 3 * r.ms);
+      // 3x the measured baseline, floor 90 s, unless the suite overrides both.
+      // A mutant that changes the step count enough to triple a suite's runtime
+      // is not going to be green either way; the cap exists because a NaN can
+      // drive dt to zero and hang the run forever instead of failing.
+      //
+      // THE OVERRIDE EXISTS BECAUSE A TIMEOUT IS AN AMBIGUITY, not a verdict. A
+      // killed suite printed no summary, so it cannot say whether a check failed
+      // or whether the mutation merely made the simulation slow; the accounting
+      // below refuses to score it as a catch, and this is the other half of the
+      // same decision -- give the expensive suite enough room to reach its own
+      // summary line, so that the honest answer is available at all. See SUITES.
+      const mul = SUITES[s].timeoutMul ?? 3;
+      const floor = SUITES[s].timeoutFloor ?? 90_000;
+      timeout[s] = Math.max(floor, mul * r.ms);
     }
     console.log('\n     timeouts: ' + want.map((s) => `${s} ${secs(timeout[s])}`).join(', '));
     return ok;
@@ -1707,9 +3050,9 @@ async function main() {
   // order was the order the mutants happen to be written in. The baseline above
   // has just measured every suite, so the harness knows the costs; sorting by
   // them is free and it is the standard makespan heuristic. Measured 2026-08-14
-  // on the 16-core machine this was written on: verify-tide 343.3 s run alone,
-  // against verify-physics 8.2 s, so a single verify-tide job that starts last
-  // adds most of six minutes to the run for nothing.
+  // on the 16-core machine this was written on: verify-tide 260.0 s run alone,
+  // against verify-physics 6.9 s, so a single verify-tide job that starts last
+  // adds four minutes to the run for nothing.
   phase1.sort((a, b) => (base[b.s]?.ms ?? 0) - (base[a.s]?.ms ?? 0));
   console.log(`\n  -- running ${phase1.length} suite runs (declared) ------------------------------\n`);
   await pool(phase1, jobs, async ({ m, s, escalated }) => {
@@ -1720,7 +3063,27 @@ async function main() {
     console.log(`     ${pad(m.id, 22)} ${pad(s, 16)} ${pad(r.status, 8)} ${secs(r.ms)}`);
   });
 
-  const detected = (m) => Object.values(state.get(m.id).results).some((r) => r.status !== 'GREEN');
+  // A DETECTION IS NOT ALWAYS A CATCH, and keeping the two words apart is the
+  // whole of the anti-false-CAUGHT machinery.
+  //
+  //   detected   some suite came back anything but GREEN.
+  //   scored     some suite came back RED (a check failed and said which) or
+  //              CRASH (the suite threw, and the stderr is printed). Both are
+  //              evidence about the MUTATION.
+  //   timeoutOnly  detected, but only by a suite that never printed a summary.
+  //              That is evidence about the CLOCK. A killed process cannot tell
+  //              you whether a check failed or whether the mutation made the
+  //              simulation slow, and scoring it as a catch makes a hole read as
+  //              covered -- which is the worst thing this file can print. It gets
+  //              its own bucket, its own verdict string, and it fails the run.
+  //              (A suite that printed its summary and then would not EXIT is a
+  //              different animal and is already handled in runSuite(): the
+  //              summary is believed and the non-termination is logged as an
+  //              anomaly about the suite.)
+  const resultsOf = (m) => Object.values(state.get(m.id).results);
+  const detected = (m) => resultsOf(m).some((r) => r.status !== 'GREEN');
+  const scored = (m) => resultsOf(m).some((r) => r.status === 'RED' || r.status === 'CRASH');
+  const timeoutOnly = (m) => detected(m) && !scored(m);
   // KNOWN SURVIVORS ARE NOT ESCALATED. Escalation exists to decide whether
   // "survived" is true before the harness says it, and for these six that
   // question has already been answered -- by the reviewer, against every suite,
@@ -1728,10 +3091,16 @@ async function main() {
   // verify-tide every time would add most of ten minutes to prove a sentence
   // that is already written down. What they DO still get is their declared
   // suites, every run, so that a stale declaration is caught.
+  //
+  // ESCALATION IS GATED ON `scored`, NOT ON `detected`. A mutant whose declared
+  // suite only TIMED OUT has told the harness nothing about itself, so it is
+  // escalated like a survivor: the point of the extra runs is to find a suite
+  // that goes RED and says which check, which is exactly what the timeout failed
+  // to produce.
   const phase2 = [];
   for (const m of selected) {
     const st = state.get(m.id);
-    if (st.error || m.known || detected(m)) continue;
+    if (st.error || m.known || scored(m)) continue;
     for (const s of SUITE_ORDER) if (!st.results[s]) phase2.push({ m, s, escalated: true });
   }
   if (phase2.length) {
@@ -1757,10 +3126,12 @@ async function main() {
   console.log('\n\n=== detail ===========================================================');
   for (const m of selected) {
     const st = state.get(m.id);
-    const caught = !st.error && detected(m);
+    const hit = !st.error && scored(m);
+    const slow = !st.error && timeoutOnly(m);
     const verdict = st.error ? 'ANCHOR-ERROR'
-      : m.known ? (caught ? 'KNOWN -> CAUGHT (declaration stale)' : 'KNOWN SURVIVOR')
-        : (caught ? 'CAUGHT' : 'SURVIVED');
+      : m.known ? (hit ? 'KNOWN -> CAUGHT (declaration stale)'
+        : slow ? 'KNOWN, but a suite TIMED OUT (inconclusive)' : 'KNOWN SURVIVOR')
+        : (hit ? 'CAUGHT' : slow ? 'TIMEOUT ONLY (not scored as a catch)' : 'SURVIVED');
     console.log(`\n  [${pad(m.id, 22)}] ${pad(m.name, 40)} ${verdict}`);
     field('breaks', m.breaks);
     field('expect', m.expect);
@@ -1777,6 +3148,11 @@ async function main() {
       const tag = r.escalated ? ' (escalated)' : '';
       let line = `     ${pad(s, 16)} ${pad(statusCell(r), 26)} ${secs(r.ms)}${tag}`;
       console.log(line);
+      if (r.hungAtExit) {
+        console.log('        NOTE  this suite printed its complete summary and then failed to');
+        console.log('              TERMINATE; it was killed at the timeout. The verdict above is');
+        console.log('              the summary it printed, not the kill. See runSuite().');
+      }
       if (r.failLines.length) {
         for (const fl of r.failLines.slice(0, 3)) console.log(`        FAIL  ${fl.slice(0, 96)}`);
         if (r.failLines.length > 3) console.log(`        ...   ${r.failLines.length - 3} more`);
@@ -1798,7 +3174,7 @@ async function main() {
   console.log('\n\n=== summary ==========================================================\n');
   console.log(`  ${'#'.padStart(2)}  ${pad('mutant', 22)} ${pad('breaks', 40)} ${pad('detected by', 34)} verdict`);
   console.log(`  ${'--'}  ${'-'.repeat(22)} ${'-'.repeat(40)} ${'-'.repeat(34)} -------`);
-  let survivors = 0, errors = 0, promoted = 0;
+  let survivors = 0, errors = 0, promoted = 0, slowReal = 0, slowKnown = 0;
   const realMutants = selected.filter((m) => !m.known);
   realMutants.forEach((m, i) => {
     const st = state.get(m.id);
@@ -1807,8 +3183,9 @@ async function main() {
     else {
       const hits = hitsFor(m);
       by = hits.length ? hits.join(' ') : 'nothing';
-      verdict = hits.length ? 'CAUGHT' : 'SURVIVED';
-      if (!hits.length) survivors++;
+      if (scored(m)) verdict = 'CAUGHT';
+      else if (timeoutOnly(m)) { verdict = 'TIMEOUT ONLY'; slowReal++; }
+      else { verdict = 'SURVIVED'; survivors++; }
     }
     console.log(`  ${String(i + 1).padStart(2)}  ${pad(m.id, 22)} ${pad(m.breaks, 40)} ${pad(by, 34)} ${verdict}`);
   });
@@ -1846,13 +3223,65 @@ async function main() {
       else {
         const hits = hitsFor(m);
         ran = m.suites.join(' ');
-        verdict = hits.length ? `NO -- caught by ${hits.join(' ')}` : 'yes';
-        if (hits.length) promoted++;
+        if (scored(m)) { verdict = `NO -- caught by ${hits.join(' ')}`; promoted++; }
+        else if (timeoutOnly(m)) { verdict = `UNKNOWN -- ${hits.join(' ')} never finished`; slowKnown++; }
+        else verdict = 'yes';
       }
       console.log(`  ${String(i + 1).padStart(2)}  ${pad(m.id, 22)} ${pad(ran, 40)} ${verdict}`);
     });
     console.log('\n  why each one gets through -- read these as a to-do list for the suites:\n');
     for (const m of knowns) { console.log(`  [${m.id}]`); field('', m.known); }
+
+    // ---- BLOCKED ON A GATE THAT HAS NOT BEEN WRITTEN --------------------
+    //
+    // A known survivor whose reason is "nothing measured can tell it apart" and
+    // a known survivor whose reason is "the file that would catch it has not
+    // been written" are the same row in the table above and NOT the same fact,
+    // and the second kind can be closed by somebody in an afternoon. It also has
+    // a failure mode the first kind does not: the declaration stays true forever
+    // by default, because nothing is trying to make it false.
+    //
+    // THAT FAILURE MODE HAPPENED, and this block is the thing that printed the
+    // lie. Eight entries carried `blocked: 'tools/verify-sphere.mjs'`, the
+    // heading here read "blocked on a suite that does not exist", the file had
+    // landed green at 248/248, and the harness exited 0 every time for three
+    // days. The field is now checked against the disk before any suite runs (see
+    // blockedFilesThatExist), the banner prints the count even when it is zero,
+    // and the ELSE branch below prints a line when there are none -- because a
+    // block that prints nothing is a block nobody can tell has rotted.
+    //
+    // The rule for the field: `blocked` is a bare repository-relative path to a
+    // file that MUST NOT EXIST. The moment it does, the run refuses. If what is
+    // missing is a SECTION of a file that already exists, this is the wrong
+    // field -- say it in `known` and declare the suite anyway, so that the claim
+    // is re-measured every run rather than asserted once.
+    const blocked = knowns.filter((m) => m.blocked && !state.get(m.id).error
+      && hitsFor(m).length === 0);
+    if (blocked.length) {
+      const files = [...new Set(blocked.map((m) => m.blocked))].sort();
+      console.log('\n  -- blocked on a gate that has not been written ----------------------\n');
+      const isAre = blocked.length === 1 ? 'is' : 'are';
+      console.log(`  ${blocked.length} of the known survivors above ${isAre} not waiting on a NEW IDEA, or on a`);
+      console.log(`  tolerance. ${blocked.length === 1 ? 'It is' : 'They are'} waiting on a FILE: ${files.join(', ')}.`);
+      console.log('  Every one of those paths was checked against the disk before this run started');
+      console.log('  and was ABSENT; if any of them appears, the next run REFUSES TO START rather');
+      console.log('  than reprinting this heading. What every RUN re-measures is the declared suite');
+      console.log('  beside each one, which is what makes a stale declaration fail loudly. This');
+      console.log('  kind of hole is the cheapest on the list:\n');
+      for (const m of blocked) {
+        console.log(`     ${pad(m.id, 24)} blocked on ${m.blocked}`);
+        if (m.needs) field('', `the check it is waiting for: ${m.needs}`);
+      }
+      console.log('\n  Until those exist, a green run from this harness says nothing whatever about');
+      console.log('  what those entries are about. Read their `known` text, not this heading.');
+    } else {
+      console.log('\n  No known survivor is blocked on a file that has not been written. Every one');
+      console.log('  of them is a statement about what the suites in SUITE_ORDER CANNOT SEE, and');
+      console.log('  that statement is re-measured against the declared suites on every run. This');
+      console.log('  line is PRINTED rather than omitted: for three days eight entries claimed to');
+      console.log('  be waiting on tools/verify-sphere.mjs while that file sat in the tree green at');
+      console.log('  248/248, and an absent block is exactly what that looked like from here.');
+    }
   }
 
   // ---- COUNTS -------------------------------------------------------------
@@ -1864,23 +3293,28 @@ async function main() {
   // quietly drop a row is a summary that can hide a survivor.
   const nErrReal = realMutants.filter((m) => state.get(m.id).error).length;
   const nErrKnown = knowns.filter((m) => state.get(m.id).error).length;
-  const nCaught = realMutants.length - survivors - nErrReal;
-  const nStillKnown = knowns.length - promoted - nErrKnown;
+  const nCaught = realMutants.length - survivors - slowReal - nErrReal;
+  const nStillKnown = knowns.length - promoted - slowKnown - nErrKnown;
   console.log('\n\n=== counts ===========================================================\n');
   const row = (n, label, text) => console.log(`  ${String(n).padStart(3)}  ${pad(label, 17)}${text}`);
   row(selected.length, 'MUTANTS RUN',
     `against ${usedSuites.length} declared suite${usedSuites.length === 1 ? '' : 's'}, ${jobs} at a time`);
-  row(nCaught, 'caught', 'a shipped suite went RED, TIMEOUT or CRASH');
+  row(nCaught, 'caught', 'a shipped suite went RED (named checks failed) or CRASHed');
   row(survivors, 'SURVIVED', 'every suite stayed green and it is NOT declared -- a hole');
   row(nStillKnown, 'known survivor', 'declared uncatchable, re-run anyway, not a failure');
   if (promoted) row(promoted, 'known -> CAUGHT', 'the declaration has gone stale and must be edited');
+  if (slowReal + slowKnown) {
+    row(slowReal + slowKnown, 'TIMEOUT ONLY',
+      'a suite was KILLED without printing a summary -- NOT scored as a catch');
+  }
   if (nErrReal + nErrKnown) {
     row(nErrReal + nErrKnown, 'ANCHOR-ERROR', 'the patch never applied, so nothing was measured');
   }
   // The sum is checked, not assumed. It does NOT return here: an early return
   // would skip the repo-integrity hash and leave the scratch tree behind, so
   // the failure is recorded and the epilogue below still runs.
-  const bucketSum = nCaught + survivors + nStillKnown + promoted + nErrReal + nErrKnown;
+  const bucketSum = nCaught + survivors + nStillKnown + promoted
+    + slowReal + slowKnown + nErrReal + nErrKnown;
   const bucketsBroken = bucketSum !== selected.length;
   if (bucketsBroken) {
     console.log(`\n  FATAL: the buckets sum to ${bucketSum} but ${selected.length} mutant`
@@ -1888,11 +3322,13 @@ async function main() {
     console.log('  fallen out of the accounting, which is the one thing this block exists to');
     console.log('  make impossible. Nothing else printed above can be trusted either.');
   }
-  if (bucketsBroken || survivors || promoted || nErrReal + nErrKnown) {
+  if (bucketsBroken || survivors || promoted || slowReal + slowKnown || nErrReal + nErrKnown) {
     console.log('\n  THIS RUN IS NOT GREEN, so it is making no claim yet. A SURVIVED row is a hole');
     console.log('  in what this repository measures; a known-survivor that was CAUGHT is a sentence');
-    console.log('  in this file that has become false; an ANCHOR-ERROR row means that mutant was');
-    console.log('  never applied and nothing about it was measured at all.');
+    console.log('  in this file that has become false; a TIMEOUT ONLY row is a question nobody');
+    console.log('  answered, because a killed suite printed no summary and cannot say whether a');
+    console.log('  check failed or the mutation merely made the simulation slow; an ANCHOR-ERROR');
+    console.log('  row means that mutant was never applied and nothing about it was measured.');
   } else {
     console.log(`\n  So this green run says: those ${nCaught} mutations CAN be caught by these suites as`);
     console.log(`  they ship, those ${nStillKnown} cannot and are admitted rather than fixed, and it says`);
@@ -1913,6 +3349,27 @@ async function main() {
     for (const s of SUITE_ORDER) {
       const r = st.results[s];
       if (r && r.status === 'GREEN' && !r.escalated) blind.push([m, s]);
+    }
+  }
+  // Non-termination is an anomaly about the SUITE, not about the mutant, so it
+  // gets counted here rather than folded into any verdict. If this block starts
+  // printing every run, the suite it names has a bug that is costing this harness
+  // one full timeout per occurrence -- 90 s each for the fast suites.
+  const hung = [];
+  for (const m of selected) {
+    const st = state.get(m.id);
+    if (st.error) continue;
+    for (const s of SUITE_ORDER) if (st.results[s]?.hungAtExit) hung.push([m, s]);
+  }
+  if (hung.length) {
+    console.log(`\n  ${hung.length} suite run(s) FINISHED AND THEN FAILED TO EXIT, and were killed at the`);
+    console.log('  timeout. Each printed a complete summary line first, so the verdict used above is');
+    console.log('  that summary and not the kill; without that distinction each of these would have');
+    console.log('  been reported as a TIMEOUT, which this harness counts as a detection, and the');
+    console.log('  mutant would have read CAUGHT by a suite that never noticed it. This is a defect');
+    console.log('  in the suite, not in the mutant -- and it costs a full timeout every time:\n');
+    for (const [m, s] of hung) {
+      console.log(`     ${pad(s, 20)} hung at exit while running ${m.id}`);
     }
   }
   if (blind.length) {
@@ -1949,6 +3406,17 @@ async function main() {
     console.log(`\n  ${errors} MUTANT(S) NEVER APPLIED. An unapplied mutation is indistinguishable`);
     console.log('  from a suite that caught nothing, so this is a hard failure, not a warning.');
     console.log('  The anchors are verbatim lines of src/; if the source moved, move them too.\n');
+    return 1;
+  }
+  if (slowReal + slowKnown) {
+    console.log(`\n  ${slowReal + slowKnown} MUTANT(S) WERE DETECTED ONLY BY A TIMEOUT, and a timeout is not a catch.`);
+    console.log('  The suite was killed before it printed a summary, so nothing in this run knows');
+    console.log('  whether a check failed or whether the mutation just made the simulation slow.');
+    console.log('  Scoring that as CAUGHT is how a hole comes to read as covered -- it has happened');
+    console.log('  once here already, see the TIMEOUT paragraph at the top of this file -- so it is');
+    console.log('  a failure instead. Fix it by giving that suite a bigger `timeoutMul` or');
+    console.log('  `timeoutFloor` in SUITES and re-running, until it either goes RED and names the');
+    console.log('  checks or goes GREEN and is an honest survivor.\n');
     return 1;
   }
   if (survivors) {

@@ -1,0 +1,327 @@
+{
+  "what": "Recorded output of tools/verify-sphere.mjs on the spherical path. Regenerate with `node tools/verify-sphere.mjs --bless`, which runs every section and overwrites this file. A regression baseline, not a theory: section 9 of that suite states what each tolerance means.",
+  "recorded": "2026-08-17",
+  "node": "v24.15.0",
+  "constants": {
+    "G_REF": 9.80665,
+    "R_REF": 6371000,
+    "OMEGA_REF": 0.00007292115,
+    "H_OCEAN": 4000,
+    "probeDeg": 2,
+    "probeSteps": 400
+  },
+  "restingOcean": [
+    {
+      "case": "flat",
+      "deg": 6,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 1.657894005438294e-13,
+      "maxEta": 0,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 6,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 7.127215342079439e-13,
+      "maxEta": 2.7284841053187847e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "piercing",
+      "deg": 6,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 4,
+      "maxSpeed": 7.159706077410005e-13,
+      "maxEta": 2.2737367544323206e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "flat",
+      "deg": 4,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 1.8924078900218376e-13,
+      "maxEta": 0,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 4,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 8.821779369467115e-13,
+      "maxEta": 2.7284841053187847e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "piercing",
+      "deg": 4,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 12,
+      "maxSpeed": 8.821779369467115e-13,
+      "maxEta": 1.8189894035458565e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "flat",
+      "deg": 3,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 1.733276633702901e-13,
+      "maxEta": 0,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 3,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 1.0817056874285123e-12,
+      "maxEta": 4.547473508864641e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "piercing",
+      "deg": 3,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 22,
+      "maxSpeed": 1.0817056874285123e-12,
+      "maxEta": 4.547473508864641e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "flat",
+      "deg": 2,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 7.713151716800609e-14,
+      "maxEta": 0,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 2,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 8.37655855209792e-13,
+      "maxEta": 4.547473508864641e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "piercing",
+      "deg": 2,
+      "order": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 50,
+      "maxSpeed": 8.37655855209792e-13,
+      "maxEta": 4.547473508864641e-12,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 2,
+      "order": 1,
+      "lat0": -90,
+      "lat1": 90,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 3.06296558554475e-13,
+      "maxEta": 4.547473508864641e-13,
+      "volumeDrift": 0
+    },
+    {
+      "case": "uneven",
+      "deg": 2,
+      "order": 2,
+      "lat0": -80,
+      "lat1": 80,
+      "steps": 400,
+      "dry": 0,
+      "maxSpeed": 1.635835497437464e-12,
+      "maxEta": 3.637978807091713e-12,
+      "volumeDrift": 0
+    }
+  ],
+  "areaIdentity": [
+    {
+      "deg": 6,
+      "lat0": -90,
+      "lat1": 90,
+      "area": 510064471909788.1,
+      "rel": -2.4506705893859617e-16
+    },
+    {
+      "deg": 4,
+      "lat0": -90,
+      "lat1": 90,
+      "area": 510064471909788.25,
+      "rel": 0
+    },
+    {
+      "deg": 3,
+      "lat0": -90,
+      "lat1": 90,
+      "area": 510064471909788.06,
+      "rel": -3.6760058840789424e-16
+    },
+    {
+      "deg": 2,
+      "lat0": -90,
+      "lat1": 90,
+      "area": 510064471909788.2,
+      "rel": -1.2253352946929809e-16
+    },
+    {
+      "deg": 1,
+      "lat0": -90,
+      "lat1": 90,
+      "area": 510064471909788.3,
+      "rel": 1.2253352946929809e-16
+    },
+    {
+      "deg": 2,
+      "lat0": -80,
+      "lat1": 80,
+      "area": 502315446472836.94,
+      "rel": -2.4884761334282286e-16
+    },
+    {
+      "deg": 4,
+      "lat0": -60,
+      "lat1": 60,
+      "area": 441728790241770.75,
+      "rel": -1.4148953244770838e-16
+    },
+    {
+      "deg": 1,
+      "lat0": 10,
+      "lat1": 70,
+      "area": 195366027169454.72,
+      "rel": 1.5995616255683328e-16
+    }
+  ],
+  "merian": [
+    {
+      "n": 2,
+      "deg": 6,
+      "closed_h": 22.920232250966617,
+      "measured_h": 22.869958174342997,
+      "errPct": -0.2193436614129299
+    },
+    {
+      "n": 2,
+      "deg": 4,
+      "closed_h": 22.920232250966617,
+      "measured_h": 22.897301045414963,
+      "errPct": -0.10004787604491351
+    },
+    {
+      "n": 2,
+      "deg": 3,
+      "closed_h": 22.920232250966617,
+      "measured_h": 22.907287416387696,
+      "errPct": -0.05647776356356354
+    },
+    {
+      "n": 2,
+      "deg": 2,
+      "closed_h": 22.920232250966617,
+      "measured_h": 22.91443830225389,
+      "errPct": -0.02527875219276476
+    },
+    {
+      "n": 3,
+      "deg": 6,
+      "closed_h": 16.2070516510291,
+      "measured_h": 16.11265679532254,
+      "errPct": -0.5824307698838352
+    },
+    {
+      "n": 3,
+      "deg": 4,
+      "closed_h": 16.2070516510291,
+      "measured_h": 16.16271567552885,
+      "errPct": -0.2735597840673982
+    },
+    {
+      "n": 3,
+      "deg": 3,
+      "closed_h": 16.2070516510291,
+      "measured_h": 16.181731399672486,
+      "errPct": -0.15622984304492488
+    },
+    {
+      "n": 3,
+      "deg": 2,
+      "closed_h": 16.2070516510291,
+      "measured_h": 16.19563767119972,
+      "errPct": -0.07042601007971488
+    },
+    {
+      "n": 4,
+      "deg": 6,
+      "closed_h": 12.553928227111822,
+      "measured_h": 12.42697956587236,
+      "errPct": -1.0112265973076033
+    },
+    {
+      "n": 4,
+      "deg": 4,
+      "closed_h": 12.553928227111822,
+      "measured_h": 12.49001281310198,
+      "errPct": -0.5091268075900572
+    },
+    {
+      "n": 4,
+      "deg": 3,
+      "closed_h": 12.553928227111822,
+      "measured_h": 12.51695605468486,
+      "errPct": -0.29450680104348775
+    },
+    {
+      "n": 4,
+      "deg": 2,
+      "closed_h": 12.553928227111822,
+      "measured_h": 12.537001983710999,
+      "errPct": -0.134828263270361
+    }
+  ]
+}
