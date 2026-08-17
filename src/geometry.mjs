@@ -36,71 +36,63 @@
 // exactly, which is what lets the h_N^2 + h_S^2 term kill the geometric part and the
 // (ly_N + ly_S)/2A coefficient kill the bed part.
 //
-// THIS TABLE WAS WRONG FOR ONE COMMIT AND THE WAY IT WAS WRONG IS THE POINT. It
-// previously named `R^2 dlam (sin phi_N - sin phi_S)` and `-(tan phi)/(4R)` as the
-// shipped choices. Both are forms this file REJECTS -- the difference form cancels
-// catastrophically near a pole, and -(tan phi)/4R is carried in tools/mutants.mjs as
-// a declared survivor. The code had moved on; the summary at the top had not, so the
-// one document a reviewer would re-derive from described two regressions as the
-// design. Regenerate this section with `node tools/verify-sphere.mjs --table`, which
-// measures it, rather than editing it by hand.
+// THIS SECTION USED TO CARRY A TABLE OF NUMBERS AND NO LONGER DOES, because a table
+// of measurements inside a comment cannot stay true. It has now been wrong twice, in
+// two different ways, inside three commits:
 //
-// EVERY NUMBER BELOW IS FROM THAT PROBE, 2 deg, 400 steps, h = 4000 m, resting ocean,
-// max speed [m/s] unless labelled. Each choice was broken on purpose in a copy of the
-// tree; the last two columns are the area identity against an INDEPENDENTLY declared
-// radius (sum of cell areas vs 4 pi R_REF^2) and a 30..60 deg band sum.
+//   1. It named `R^2 dlam (sin phi_N - sin phi_S)` and `-(tan phi)/(4R)` as the
+//      shipped choices. Both are forms this file REJECTS -- one cancels catastrophically
+//      near a pole, the other is carried in tools/mutants.mjs as a declared survivor.
+//      The code had moved during the session and the prose below the table was updated;
+//      the summary at the top was not.
+//   2. The replacement was re-measured by hand and then diverged from
+//      `node tools/verify-sphere.mjs --table`, the command it told the reader to
+//      regenerate it with, because the two used different bed fixtures. Following the
+//      instruction would have made a reviewer conclude the code had regressed.
 //
-//   mutation                 flat bed    uneven bed   piercing    area ident    band
-//   (none)                   7.713e-14   6.689e-13   5.311e-13   -1.225e-16  5.022e-16
-//   bedPhi := R dphi         7.713e-14   5.877e-03   1.302e-02   -1.225e-16  5.022e-16
-//   geo on h_cell^2          7.713e-14   7.463e-02   7.463e-02   -1.225e-16  5.022e-16
-//   geo source deleted       3.088e+02   3.088e+02   3.088e+02   -1.225e-16  5.022e-16
-//   area := cos(phi) dlam dphi 1.326e-13 7.363e-13   5.155e-13    5.077e-05  5.077e-05
-//   area := sin N - sin S    1.428e-13   7.309e-13   5.182e-13    0.000e+00  6.695e-16
-//   geoCoef := -tan(phi)/4R  1.259e-12   1.151e-12   1.259e-12   -1.225e-16  5.022e-16
-//   phi_C area-bisecting     8.219e-14   5.897e-13   4.251e-13    7.073e-04  1.670e-04
-//   cosLat := Math.cos(p)    7.532e-14   7.503e-13   6.040e-13    0.000e+00  6.695e-16
+// The numbers live in the suite, which measures them on every run:
 //
-// A FLAT BED CATCHES ONE OF FOUR correctness mutations, which is the whole reason
-// this note is long. On a flat bed h_N = h_S = h_cell, so h_N^2 + h_S^2 == 2 h_cell^2
-// and the shipped source and the h_cell^2 one are THE SAME EXPRESSION. The wrong form
-// is exactly zero on a flat bed and wakes up only over SLOPES -- a persistent rim
-// current on every shelf break and seamount flank and nowhere else, which is the one
-// artefact an oceanographer would nod at rather than question. The bed used above has
-// 1800-2500 m of relief; 200 m suffices. A fifth mutation, leaving the bed-source
-// guard at `order >= 2`, passes everything at order 2 and reads 2.799e+02 at order 1.
+//     node tools/verify-sphere.mjs --table        the mutation table, measured
+//     node tools/verify-sphere.mjs                the full gate, 248 checks
+//     tools/sphere-baseline.json                  the checked-in reference values
 //
-// THE PIERCING COLUMN IS A REAL COASTLINE NOW. It previously came from a bed whose
-// summit is 890.4 m UNDER water with ZERO dry cells, so that column was a duplicate
-// of the uneven one (6.6886e-13 and 3.6380e-12 in both, digit for digit, published
-// without anyone noticing). The bed above breaks the surface: summit +1263.8 m, 14
-// dry cells. And the honest result is that it changes very little at baseline
-// (5.311e-13 against 6.689e-13) -- it earns its place on the mutants, where
-// geo-hcell-squared and bedphi-Rdphi both read larger over a coastline than without
-// one. A fixture that claims to pierce must ASSERT its dry-cell count, or it can stop
-// piercing silently, which is exactly what happened.
+// What belongs HERE is only what does not drift -- which gate catches which mistake,
+// and why the obvious test does not:
 //
-// THE NAIVE AREA SURVIVES EVERY STILL-WATER TEST AT EVERY RESOLUTION, and the reason
-// generalises: R^2 cos(phi) dlam dphi is the exact area times 1/sinc(dphi/2), a factor
-// INDEPENDENT OF LATITUDE. It scales dxRow, dyRow and bedPhi up by that factor and
-// geoCoef down by it, so the flux divergence and the geometric source move together
-// and the balance holds identically. This is the g x 1.1 disease -- a wrong constant
-// every relative check divides out -- and no resting test of any bed can catch it.
-// What catches it is the area identity, which reads 5.077e-05 at 2 deg and 1.269e-05
-// at 1 deg against -1.2e-16 for the shipped form. The band sum is there one level
-// down, for a metric right in TOTAL and mis-distributed by row: that is the ONLY
-// column in which phi_C area-bisecting shows up at all.
+// A FLAT BED CATCHES ONE MISTAKE IN FOUR. On a flat bed h_N = h_S = h_cell, so
+// h_N^2 + h_S^2 == 2 h_cell^2 and the shipped geometric source and the h_cell^2 one are
+// THE SAME EXPRESSION. The wrong form is exactly zero on a flat bed and wakes up only
+// over SLOPES -- a persistent rim current on every shelf break and seamount flank and
+// nowhere else, which is the one artefact an oceanographer would nod at rather than
+// question. Bed relief of ~200 m is enough to separate them. A fifth mistake, leaving
+// the bed-source guard at `order >= 2`, is invisible at second order and only shows in
+// an order-1 run.
 //
-// TWO ROWS THAT ARE NOT CORRECTNESS BUGS, and saying so is the point of printing them.
-// `geoCoef := -tan(phi)/4R` and `cosLat := Math.cos(p)` are CONDITIONING regressions:
-// 1.259e-12 and 7.532e-14 against a 7.713e-14 baseline, i.e. rounding level, and they
-// do not grow under refinement (measured to 0.5 deg). The face-length and co-latitude
-// forms are still right -- cheaper, fewer transcendentals -- but tools/mutants.mjs
-// carries both as DECLARED SURVIVORS rather than pretending a gate catches them.
-// `area := sin N - sin S` is a third of this kind, and note it is marginally BETTER on
-// the total-area identity (exactly 0 against -1.2e-16) while being 1.85x worse on the
-// resting balance and worse on the band: the product form is not uniformly superior,
-// it is superior where a pole makes the difference form cancel.
+// THE RESTING LAKE AND THE METRIC IDENTITIES CATCH DISJOINT SETS, which is the single
+// most useful thing to know about testing this file:
+//
+//   caught by a resting lake only    geo on h_cell^2; the geometric source deleted
+//   caught by the metric only        area := R^2 cos(phi) dlam dphi;
+//                                    phi_C area-bisecting; cosLat := Math.cos
+//   caught by both                   bedPhi := R dphi
+//
+// THE NAIVE AREA IS INVISIBLE TO EVERY STILL-WATER TEST AT EVERY RESOLUTION, and the
+// reason generalises past this file: R^2 cos(phi) dlam dphi is the exact area times
+// 1/sinc(dphi/2), a factor INDEPENDENT OF LATITUDE. It scales dxRow, dyRow and bedPhi
+// up by that factor and geoCoef down by it, so the flux divergence and the geometric
+// source move together and the balance holds identically. This is the g x 1.1 disease
+// -- a wrong constant that every relative check divides out. What catches it is the
+// area identity against an INDEPENDENTLY DECLARED radius, and one level down a per-band
+// sum, for a metric right in TOTAL and mis-distributed by row. The band sum is the only
+// place phi_C area-bisecting shows up at all: it leaves the resting balance quieter
+// than some declared survivors while putting the metric out by ~7e-4.
+//
+// TWO SUBSTITUTIONS ARE CONDITIONING REGRESSIONS AND NOT CORRECTNESS BUGS.
+// `geoCoef := -tan(phi)/4R` and `area := sin N - sin S` compute the same numbers by a
+// worse route; both sit at rounding level and neither grows under refinement. Worth
+// knowing: the difference form is marginally BETTER on the total-area identity while
+// being worse on the resting balance and on the band, so the product form is not
+// uniformly superior -- it is superior where a pole makes the difference form cancel.
 //
 // THE POLE NEEDS NO SPECIAL CASE. The face at phi = 90 deg has length
 // R dlam cos(90 deg) = 0, so no flux can cross it: the pole is a zero-length
@@ -123,16 +115,41 @@ const clampLat = (p) => (p > HALF_PI ? HALF_PI : p < -HALF_PI ? -HALF_PI : p);
 const reflectLat = (p) => (p > HALF_PI ? Math.PI - p : p < -HALF_PI ? -Math.PI - p : p);
 
 /**
- * cos(latitude), via the CO-latitude, which is the only form that is exactly zero
- * at a pole.
+ * cos(latitude), via the CO-latitude, which is the only form that is exactly zero at
+ * a pole.
  *
- * `Math.cos(Math.PI/2)` is 6.123e-17, not 0, because pi/2 is not representable.
- * That is not a rounding curiosity here: it gives the pole face a length of
- * 2.7e-11 m instead of none, and the pressure flux through a face that should not
- * exist drove the resting-lake residual to 2.8e-10 m/s^2 at 1 degree -- 300
- * times the existing gate -- growing with refinement, and worst at exactly the
- * row where nobody would look for a metric bug. `sin(pi/2 - |p|)` is exact at 0
- * and accurate for small arguments, so a pole face is closed to the bit.
+ * `Math.cos(Math.PI/2)` is 6.123e-17, not 0, because pi/2 is not representable, so a
+ * pole face comes out 2.72e-11 m long at a 4 degree longitude spacing (1.36e-11 at 2,
+ * 6.81e-12 at 1) instead of not existing. `sin(pi/2 - |p|)` is exact at 0 and accurate
+ * for small arguments, so the face is closed to the bit and the pole needs no special
+ * case at all.
+ *
+ * WHY, and the first version of this docstring got this badly wrong. It claimed the
+ * open pole face "drove the resting-lake residual to 2.8e-10 m/s^2 at 1 degree, 300
+ * times the existing gate, growing with refinement". None of that is true of the
+ * solver. Measured, shipped tree against `cosLat := Math.cos`, residual acceleration
+ * after one step:
+ *
+ *   deg  bed      shipped      mutant       ratio
+ *   4    flat     2.842e-17    2.842e-17    1.00
+ *   4    uneven   3.850e-16    6.087e-16    1.58
+ *   2    flat     2.887e-17    2.842e-17    0.98
+ *   2    uneven   2.001e-15    2.745e-15    1.37
+ *   1    flat     1.705e-16    1.137e-16    0.67
+ *   1    uneven   1.091e-14    9.721e-15    0.89
+ *
+ * The largest residual anywhere is 1.1e-14, four orders below the number that was
+ * published, it is LOWER than shipped in three of six cases, and it does not grow. The
+ * 2.8e-10 came from a standalone algebraic probe of the pressure balance, not from the
+ * solver -- the third time in one session an isolated-probe figure was quoted as
+ * solver behaviour, which is why the numbers above name their rig.
+ *
+ * So the real argument is not magnitude, it is IDENTITY: a face that should not exist
+ * should have length 0, not 1e-11, because a zero-length face transports nothing by
+ * construction rather than by being small. That is a property an exact assertion can
+ * hold, and tools/verify-sphere.mjs holds it -- `lyS === 0` at the pole, ===, not
+ * < eps. That check is the only thing in the repository that catches this mutation:
+ * every resting lake at every resolution lets it through, as the table above shows.
  */
 const cosLat = (p) => {
   const co = HALF_PI - Math.abs(p);
