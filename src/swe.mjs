@@ -140,6 +140,8 @@ function central(a, b) { return 0.5 * (a + b); }
 
 const LIMITERS = { minmod, mc, central };
 
+import { cartesianGeometry, sphericalGeometry } from './geometry.mjs';
+
 export class ShallowWater {
   /**
    * @param nx,ny      interior cells
@@ -168,8 +170,18 @@ export class ShallowWater {
   constructor({
     nx, ny, dx, dy = dx, bed, eta0 = 0, manning = 0.025,
     minDepth = 1e-3, cfl = 0.45, coriolis = 0, order = 2, limiter = 'mc',
+    sphere = null,
   }) {
     this.nx = nx; this.ny = ny; this.dx = dx; this.dy = dy;
+    // THE METRIC. Cartesian unless `sphere` is supplied, in which case dx is
+    // meaningless -- a cell width depends on its latitude -- and is left undefined
+    // so that anything still reading it produces a loud NaN rather than a quiet
+    // mid-domain approximation. See src/geometry.mjs for why the spherical
+    // divisors are stored as divisors.
+    this.geom = sphere
+      ? sphericalGeometry({ nx, ny, ng: 2, ...sphere })
+      : cartesianGeometry({ nx, ny, dx, dy, ng: 2, coriolis });
+    if (sphere) { this.dx = undefined; this.dy = this.geom.dy; }
     this.manning = manning; this.minDepth = minDepth; this.cfl = cfl;
     // vel()'s desingularisation constant, which depends only on minDepth. Cached
     // because vel() is the most-called function in the solver; nothing in this
@@ -209,7 +221,9 @@ export class ShallowWater {
     for (let j = 0; j < this.H; j++) {
       for (let i = 0; i < this.W; i++) {
         const k = j * this.W + i;
-        const [x, y] = this.cellCentre(i - this.ng, j - this.ng);
+        const [x, y] = this.geom.kind === 'sphere'
+          ? this.cellLonLat(i - this.ng, j - this.ng)
+          : this.cellCentre(i - this.ng, j - this.ng);
         this.b[k] = bed(x, y);
         const e = typeof eta0 === 'function' ? eta0(x, y) : eta0;
         this.h[k] = Math.max(0, e - this.b[k]);
@@ -218,12 +232,38 @@ export class ShallowWater {
 
     this.t = 0;
     this.steps = 0;
-    this.boundaries = { west: reflect, east: reflect, south: reflect, north: reflect };
+    // On a sphere longitude WRAPS -- it is not a boundary, it is the same water --
+    // and the caps are walls (or, at +-90, zero-length faces that close
+    // themselves; see src/geometry.mjs).
+    this.boundaries = this.geom.kind === 'sphere'
+      ? { west: periodic, east: periodic, south: reflect, north: reflect }
+      : { west: reflect, east: reflect, south: reflect, north: reflect };
     this.forcing = null;              // optional (sim, dt) => void, e.g. a tidal potential
     this.stats = {};
   }
 
-  cellCentre(i, j) { return [(i + 0.5) * this.dx, (j + 0.5) * this.dy]; }
+  cellCentre(i, j) {
+    if (this.geom.kind === 'sphere') {
+      throw new Error('cellCentre is Cartesian-only; a spherical cell has no single '
+        + 'x in metres. Use cellLonLat(i, j).');
+    }
+    return [(i + 0.5) * this.dx, (j + 0.5) * this.dy];
+  }
+
+  /**
+   * Longitude and latitude of a cell centre, in DEGREES, longitude in [-180, 180).
+   *
+   * Accepts ghost indices, and longitude WRAPS rather than running off the end,
+   * because it must: the ghost column at i = -1 is physically the column at
+   * i = nx - 1, so a bed function sampled there has to see the same place, or every
+   * MUSCL slope across the seam is taken over a discontinuity that is not there.
+   */
+  cellLonLat(i, j) {
+    const g = this.geom;
+    if (g.kind !== 'sphere') throw new Error('cellLonLat is spherical-only');
+    const lon = (i + 0.5) * g.dlam * 180 / Math.PI;
+    return [((lon % 360) + 360) % 360 - 180, g.phiC[j + this.ng] * 180 / Math.PI];
+  }
   idx(i, j) { return (j + this.ng) * this.W + (i + this.ng); }
 
   /** Free-surface elevation of an interior cell. */
@@ -265,7 +305,9 @@ export class ShallowWater {
 
   /** Fill this.rh/rhu/rhv with the spatial residual (dU/dt). */
   residual(dt) {
-    const { W, H, ng, dx, dy, minDepth } = this;
+    const { W, H, ng, minDepth } = this;
+    const gm = this.geom, sph = gm.kind === 'sphere';
+    const dxRow = gm.dxRow, dyRowN = gm.dyRowN, dyRowS = gm.dyRowS, bedPhi = gm.bedPhi;
     const h = this.h, hu = this.hu, hv = this.hv, b = this.b;
     const rh = this.rh, rhu = this.rhu, rhv = this.rhv;
     const fxM = this.fxM, fxN = this.fxN, fxT = this.fxT;
@@ -472,10 +514,13 @@ export class ShallowWater {
         for (let i = ng - 1; i < W - ng + 1; i++) {
           const k = j * W + i;
           let out = 0;
-          if (fxM[k] > 0) out += fxM[k] / dx;
-          if (fxM[k - 1] < 0) out -= fxM[k - 1] / dx;
-          if (fyM[k] > 0) out += fyM[k] / dy;
-          if (fyM[k - W] < 0) out -= fyM[k - W] / dy;
+          // Per-row divisors. fyM[k] is the NORTH face of cell k and fyM[k-W] its
+          // SOUTH one, and on a sphere those two faces have different lengths, so
+          // they cannot share a divisor.
+          if (fxM[k] > 0) out += fxM[k] / dxRow[j];
+          if (fxM[k - 1] < 0) out -= fxM[k - 1] / dxRow[j];
+          if (fyM[k] > 0) out += fyM[k] / dyRowN[j];
+          if (fyM[k - W] < 0) out -= fyM[k - W] / dyRowS[j];
           const avail = h[k];
           if (out * dt > avail) theta[k] = avail > 0 ? avail / (out * dt) : 0;
         }
@@ -485,7 +530,9 @@ export class ShallowWater {
       for (let i = ng - 1; i < W - ng; i++) {
         const kL = j * W + i, kR = kL + 1;
         const th = fxM[kL] >= 0 ? theta[kL] : theta[kR];
-        const inv = th / dx;
+        // Both cells across a zonal face lie in the SAME row, so one divisor still
+        // serves both -- on a sphere exactly as in Cartesian.
+        const inv = th / dxRow[j];
         rh[kL] -= fxM[kL] * inv; rhu[kL] -= (fxN[kL] + pxL[kL]) * inv; rhv[kL] -= fxT[kL] * inv;
         rh[kR] += fxM[kL] * inv; rhu[kR] += (fxN[kL] + pxR[kL]) * inv; rhv[kR] += fxT[kL] * inv;
       }
@@ -494,15 +541,35 @@ export class ShallowWater {
       for (let i = ng; i < W - ng; i++) {
         const kL = j * W + i, kR = kL + W;
         const th = fyM[kL] >= 0 ? theta[kL] : theta[kR];
-        const inv = th / dy;
-        rh[kL] -= fyM[kL] * inv; rhv[kL] -= (fyN[kL] + pyL[kL]) * inv; rhu[kL] -= fyT[kL] * inv;
-        rh[kR] += fyM[kL] * inv; rhv[kR] += (fyN[kL] + pyR[kL]) * inv; rhu[kR] += fyT[kL] * inv;
+        // TWO divisors, because the two cells sharing this face lie in different
+        // ROWS and on a sphere different rows have different areas. The face is one
+        // length shared by both (dyRowN[j] and dyRowS[j+1] are built from the same
+        // ly), so each cell receives the same flux*length divided by its OWN area,
+        // which is what keeps mass conservation exact instead of nearly exact.
+        const invL = th / dyRowN[j];
+        const invR = th / dyRowS[j + 1];
+        rh[kL] -= fyM[kL] * invL; rhv[kL] -= (fyN[kL] + pyL[kL]) * invL; rhu[kL] -= fyT[kL] * invL;
+        rh[kR] += fyM[kL] * invR; rhv[kR] += (fyN[kL] + pyR[kL]) * invR; rhu[kR] += fyT[kL] * invR;
       }
     }
 
     // ---- centred bed term, needed for 2nd-order well-balancing ------------
-    if (this.order >= 2) {
+    // On a sphere this block runs at EVERY order. In Cartesian the bed term is a
+    // second-order-ONLY correction, because the hydrostatic reconstruction handles
+    // the bed exactly at first order -- which is why the guard is right there, and
+    // why leaving it alone is the loudest way to get a spherical port wrong. The
+    // geometric source below exists at every order: at first order all slopes are
+    // zero, hP = hM = h[k], and -(tan phi/4R)*G*2h^2 is not zero. Magnitude at
+    // h = 4000 m and 45 degrees: 3.1e-3 m/s^2, i.e. 268 m/s per day, with the whole
+    // ocean draining to the equator inside a few minutes.
+    //
+    // Running it at first order costs Cartesian nothing: sE and sB are written only
+    // by the slope block, so at order 1 they stay zero for the life of the object,
+    // db = 0, and every term here is identically zero.
+    if (this.order >= 2 || sph) {
+      const geoCoef = gm.geoCoef;
       for (let j = ng; j < H - ng; j++) {
+        const bedDiv1 = bedPhi[j], bedDiv0 = dxRow[j], gc = geoCoef[j];
         for (let i = ng; i < W - ng; i++) {
           const k = j * W + i, k2 = 2 * k, bk = b[k];
           const eC = bk + h[k];
@@ -510,15 +577,45 @@ export class ShallowWater {
             const hP = Math.max(0, eC + 0.5 * sE[k2 + d] - (bk + 0.5 * sB[k2 + d]));
             const hM = Math.max(0, eC - 0.5 * sE[k2 + d] - (bk - 0.5 * sB[k2 + d]));
             const db = sB[k2 + d];
-            const term = -G * 0.5 * (hP + hM) * db / (d === 0 ? dx : dy);
-            if (d === 0) rhu[k] += term; else rhv[k] += term;
+            const term = -G * 0.5 * (hP + hM) * db / (d === 0 ? bedDiv0 : bedDiv1);
+            if (d === 0) rhu[k] += term;
+            else {
+              rhv[k] += term;
+              // THE SPHERICAL GEOMETRIC SOURCE, on the SUM OF SQUARES of this cell
+              // own reconstructed face depths and not on h_cell^2. The two agree
+              // exactly on a flat bed, which is why no flat-bed test can tell them
+              // apart; over a slope the h_cell^2 form leaves about 0.17 m/s per day
+              // per 200 m of relief, arriving as a persistent rim current on every
+              // shelf break and seamount flank and nowhere else. That is the
+              // hardest artefact here to disbelieve, because a slope current at the
+              // shelf break is what the real ocean has.
+              if (sph) rhv[k] += gc * G * (hP * hP + hM * hM);
+            }
           }
         }
       }
     }
 
     // ---- Coriolis ---------------------------------------------------------
-    if (this.coriolis) {
+    if (sph) {
+      // f = 2 omega sin(phi), PLUS the metric curvature term u tan(phi)/R. That
+      // second piece is easy to omit and nearly impossible to catch afterwards: it
+      // is exactly zero at rest, it is 1.5e-3 of f at 45 degrees so an
+      // inertial-oscillation check cannot see it, and it is absent from any
+      // zonal-strip test. Only advection over a pole, or a long high-latitude jet,
+      // notices. Folding it into an effective f is not an approximation; the two
+      // enter the momentum equations in identical positions.
+      const fRow = gm.fRow, tanPhi = gm.tanPhi, R = gm.R, U = this.uu;
+      for (let j = ng; j < H - ng; j++) {
+        const f0 = fRow[j], tR = tanPhi[j] / R;
+        for (let i = ng; i < W - ng; i++) {
+          const k = j * W + i;
+          const fe = f0 + U[k] * tR;
+          rhu[k] += fe * hv[k];
+          rhv[k] -= fe * hu[k];
+        }
+      }
+    } else if (this.coriolis) {
       const f = this.coriolis;
       for (let j = ng; j < H - ng; j++) {
         for (let i = ng; i < W - ng; i++) {
@@ -532,7 +629,8 @@ export class ShallowWater {
 
   /** Largest stable step from the CFL condition, over wet cells only. */
   maxDt() {
-    const { W, H, ng, dx, dy } = this;
+    const { W, H, ng } = this;
+    const dxRow = this.geom.dxRow, dyCFL = this.geom.dyCFL;
     let inv = 0;
     for (let j = ng; j < H - ng; j++) {
       for (let i = ng; i < W - ng; i++) {
@@ -540,7 +638,7 @@ export class ShallowWater {
         if (hk <= this.minDepth) continue;
         const c = Math.sqrt(G * hk);
         const u = Math.abs(this.vel(this.hu[k], hk)), v = Math.abs(this.vel(this.hv[k], hk));
-        const s = (u + c) / dx + (v + c) / dy;
+        const s = (u + c) / dxRow[j] + (v + c) / dyCFL[j];
         if (s > inv) inv = s;
       }
     }
@@ -662,10 +760,23 @@ export class ShallowWater {
 
   /** Total water volume over the interior [m^3]. */
   volume() {
-    const { W, ng, nx, ny, dx, dy } = this;
+    const { W, ng, nx, ny } = this;
+    // The Cartesian branch sums every cell and multiplies ONCE, which is the
+    // summation order the pinned 2.0662e-16 drift figure was measured with;
+    // multiplying per row rounds differently and would move it.
+    if (this.geom.kind !== 'sphere') {
+      let v = 0;
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) v += this.h[(j + ng) * W + (i + ng)];
+      return v * this.dx * this.dy;
+    }
+    const area = this.geom.area;
     let v = 0;
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) v += this.h[(j + ng) * W + (i + ng)];
-    return v * dx * dy;
+    for (let j = 0; j < ny; j++) {
+      let row = 0;
+      for (let i = 0; i < nx; i++) row += this.h[(j + ng) * W + (i + ng)];
+      v += row * area[j + ng];
+    }
+    return v;
   }
 
   /**
@@ -694,17 +805,20 @@ export class ShallowWater {
    * That is a one-off measurement, not a regression guard: nothing re-runs it.
    */
   energy() {
-    const { W, ng, nx, ny, dx, dy } = this;
+    const { W, ng, nx, ny } = this;
+    const sph = this.geom.kind === 'sphere', area = this.geom.area;
     let e = 0;
     for (let j = 0; j < ny; j++) {
+      let row = 0;
       for (let i = 0; i < nx; i++) {
         const k = (j + ng) * W + (i + ng), hk = this.h[k];
         if (hk <= 0) continue;
         const u = this.vel(this.hu[k], hk), v = this.vel(this.hv[k], hk);
-        e += 0.5 * hk * (u * u + v * v) + 0.5 * G * hk * (hk + 2 * this.b[k]);
+        row += 0.5 * hk * (u * u + v * v) + 0.5 * G * hk * (hk + 2 * this.b[k]);
       }
+      if (sph) e += row * area[j + ng]; else e += row;
     }
-    return e * dx * dy;
+    return sph ? e : e * this.dx * this.dy;
   }
 
   /** Largest |eta - reference| anywhere wet, for the still-water check. */
