@@ -84,7 +84,7 @@
       <tr><td>wetted area</td><td id="r_wet">&mdash;</td></tr>
       <tr><td id="r_vol_lab">volume drift</td><td id="r_vol">&mdash;</td></tr>
       <tr><td>section exaggeration</td><td id="r_ex">&mdash;</td></tr>
-      <tr><td>ms / frame</td><td id="r_ms">&mdash;</td></tr>
+      <tr><td>ms / frame solve + draw</td><td id="r_ms">&mdash;</td></tr>
     </table>
     <p class="note" id="volnote"></p>
     <p class="note" id="reswarn"></p>
@@ -210,7 +210,15 @@ function syncOuts() {
   view.scale = +$('S').value / 10;
 }
 
-let acc = 0, frames = 0, msAcc = 0;
+// TWO counters, because one was measuring half the frame. `msAcc` was advertised
+// on the panel as "ms / frame" while `view.draw()` sat OUTSIDE the timed block
+// (and outside `if (running)`), so the renderer's cost had never once appeared in
+// the only number on screen that claims to be a frame cost. That matters beyond
+// tidiness: src/render.mjs:113-118 justifies baking the colour ramp into a LUT on
+// the grounds that "ms/frame is a number this UI puts on screen" -- an appeal to a
+// number that could not see the ramp. Solve and draw are reported SEPARATELY
+// rather than summed, so neither published figure silently changes meaning.
+let acc = 0, frames = 0, msAcc = 0, drawFrames = 0, drawAcc = 0;
 
 // The readout is a NAMED function and is exported on window.water, so it can be
 // driven without the animation loop. requestAnimationFrame does not fire in a
@@ -219,7 +227,14 @@ let acc = 0, frames = 0, msAcc = 0;
 // the same code the loop runs -- not a second copy of it.
 function readout() {
   if (!sim) return;
-  if (frames > 0) { $('r_ms').textContent = (msAcc / frames).toFixed(1); msAcc = 0; frames = 0; }
+  // Gated on DRAW frames, not solve frames: paused, the solver contributes nothing
+  // and the old gate never fired, so the panel froze on a stale figure exactly when
+  // someone was studying a still frame.
+  if (drawFrames > 0) {
+    const solve = frames > 0 ? msAcc / frames : 0;
+    $('r_ms').textContent = `${solve.toFixed(1)} + ${(drawAcc / drawFrames).toFixed(1)}`;
+    msAcc = 0; frames = 0; drawAcc = 0; drawFrames = 0;
+  }
   $('r_t').textContent = sim.t < 3600 ? sim.t.toFixed(1) + ' s' : (sim.t / 3600).toFixed(2) + ' h';
   $('r_dt').textContent = sim.maxDt().toFixed(3) + ' s';
   $('r_spd').textContent = sim.maxSpeed().toFixed(2) + ' m/s';
@@ -273,8 +288,10 @@ function loop() {
     }
     msAcc += performance.now() - t0; frames++;
   }
+  const td0 = performance.now();
   view.draw(sim, { msl });
-  if (frames >= 15) readout();
+  drawAcc += performance.now() - td0; drawFrames++;
+  if (drawFrames >= 15) readout();
 }
 
 for (const id of ['H', 'T', 'R', 'S', 'Q']) $(id).addEventListener('input', () => { syncOuts(); if (id === 'Q') build(); });
