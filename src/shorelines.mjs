@@ -76,8 +76,19 @@ export const SHORELINES = {
   // -------------------------------------------------------------------------
   planeBeach: {
     title: 'plane beach',
-    blurb: 'A uniform 1:40 slope. The clean case: shoaling and breaking with nothing else going on.',
-    expect: 'Wave height grows as h^(-1/4) (Green) until H/h reaches ~0.8, then breaks and decays through a surf zone. No alongshore variation anywhere.',
+    blurb: 'A uniform 1:40 slope. The clean case: shoaling with nothing else going on.',
+    // NOT "until H/h reaches ~0.8, then breaks", which is what this line said for
+    // three commits after the README had already retracted it. Shallow-water
+    // equations carry no dispersion, so a finite-amplitude wave steepens into a bore
+    // and dissipates BEFORE the depth-limited breaking point: measured peak H/h is
+    // 0.4660, 60% of McCowan's 0.78, and it TRACKS H0 instead of saturating -- which
+    // is the signature of a wave that is not depth-limited at all. Anyone reading
+    // this string to decide when a wave breaks would have coded H = 0.78h and got a
+    // rule this simulator does not produce.
+    expect: 'Wave height grows as h^(-1/4) (Green), then steepens into a bore and decays. '
+      + 'It does NOT reach depth-limited breaking: peak H/h measured 0.466 against '
+      + 'McCowan 0.78, and it scales with H0 rather than saturating. This is not a '
+      + 'breaking model -- see the README. No alongshore variation anywhere.',
     domain: { nx: 800, ny: 4, dx: 2.5, dy: 2.5 },
     defaults: { offshoreDepth: 12, slope: 1 / 40, shoreAt: 1600 },
     build({ offshoreDepth, slope, shoreAt }) {
