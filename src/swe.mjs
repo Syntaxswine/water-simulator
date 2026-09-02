@@ -189,6 +189,7 @@ export class ShallowWater {
     // would have to recompute this alongside it.
     this.eps4 = Math.max(minDepth, 1e-12) ** 4;
     this.coriolis = coriolis; this.order = order;
+    this.manningField = null;   // set via setManningField(); see applyFriction()
     this.limiterName = limiter;
     this.limit = LIMITERS[limiter];
     if (!this.limit) throw new Error(`unknown limiter ${limiter}; have ${Object.keys(LIMITERS)}`);
@@ -657,6 +658,35 @@ export class ShallowWater {
    */
   applyFriction(dt) {
     const n = this.manning;
+    // PER-CELL Manning, when a field is supplied. Roughness is a property of the
+    // ground, not of the run: gridlands exports forest at 0.100 against playa at
+    // 0.020, a factor of FIVE, and overland routing is where that shows -- a flood
+    // crossing woodland and a flood crossing a salt pan are not the same flood.
+    //
+    // The scalar path below is untouched and stays BYTE-IDENTICAL: same `if (!n)
+    // return`, same expression, same operand order, same divisions. The array path
+    // is a separate loop rather than an `nArr ? nArr[k] : n` inside the hot one,
+    // because a ternary in there would change nothing numerically and would still
+    // have to be argued about every time someone reads it.
+    if (this.manningField) {
+      const nf = this.manningField;
+      const { W, H, ng } = this;
+      for (let j = ng; j < H - ng; j++) {
+        for (let i = ng; i < W - ng; i++) {
+          const k = j * W + i, hk = this.h[k];
+          if (hk <= this.minDepth) { this.hu[k] = 0; this.hv[k] = 0; continue; }
+          const nk = nf[k];
+          if (!nk) continue;
+          const u = this.vel(this.hu[k], hk), v = this.vel(this.hv[k], hk);
+          const speed = Math.hypot(u, v);
+          if (speed < 1e-14) continue;
+          const denom = 1 + dt * G * nk * nk * speed / Math.pow(hk, 4 / 3);
+          this.hu[k] /= denom;
+          this.hv[k] /= denom;
+        }
+      }
+      return;
+    }
     if (!n) return;
     const { W, H, ng } = this;
     for (let j = ng; j < H - ng; j++) {
@@ -671,6 +701,33 @@ export class ShallowWater {
         this.hv[k] /= denom;
       }
     }
+  }
+
+  /**
+   * Supply a per-cell Manning field, sampled the way bed() is.
+   *
+   * @param fn  (x, y) -> Manning n, or (lon, lat) on a sphere. Sampled at every cell
+   *   centre INCLUDING the ghost rings, so the array indexes exactly like h and b.
+   *   Pass null to go back to the scalar.
+   */
+  setManningField(fn) {
+    if (!fn) { this.manningField = null; return this; }
+    const N = this.W * this.H, out = new Float64Array(N);
+    const sph = this.geom.kind === 'sphere';
+    for (let j = 0; j < this.H; j++) {
+      for (let i = 0; i < this.W; i++) {
+        const [x, y] = sph
+          ? this.cellLonLat(i - this.ng, j - this.ng)
+          : this.cellCentre(i - this.ng, j - this.ng);
+        const v = fn(x, y);
+        if (!(v >= 0) || !isFinite(v)) {
+          throw new Error(`setManningField: n = ${v} at (${x}, ${y}); Manning n must be finite and >= 0`);
+        }
+        out[j * this.W + i] = v;
+      }
+    }
+    this.manningField = out;
+    return this;
   }
 
   /** Clean up dry and near-dry cells; returns the mass added by flooring h. */
